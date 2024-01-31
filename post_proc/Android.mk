@@ -41,9 +41,10 @@ LOCAL_VENDOR_MODULE := true
 
 LOCAL_C_INCLUDES := \
 	external/tinyalsa/include \
+        hardware/libhardware/include \
 	$(call include-path-for, audio-effects)
 
-LOCAL_HEADER_LIBRARIES := generated_kernel_headers
+LOCAL_HEADER_LIBRARIES := generated_kernel_headers libsystem_headers libaudio_system_headers
 
 include $(BUILD_SHARED_LIBRARY)
 
