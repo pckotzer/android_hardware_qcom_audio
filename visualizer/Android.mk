@@ -20,6 +20,7 @@ LOCAL_SRC_FILES:= \
 	offload_visualizer.c
 
 LOCAL_CFLAGS+= -O2 -fvisibility=hidden
+LOCAL_CFLAGS += -Wno-unused-variable
 
 LOCAL_SHARED_LIBRARIES := \
 	libcutils \
@@ -27,24 +28,15 @@ LOCAL_SHARED_LIBRARIES := \
 	libdl \
 	libtinyalsa
 
-LOCAL_CFLAGS += \
-    -Wall \
-    -Werror \
-    -Wno-unused-variable \
-
-LOCAL_HEADER_LIBRARIES := libhardware_headers
+LOCAL_HEADER_LIBRARIES := libsystem_headers libaudio_system_headers
 
 LOCAL_MODULE_RELATIVE_PATH := soundfx
 LOCAL_MODULE:= libqcomvisualizer
-LOCAL_LICENSE_KINDS:= SPDX-license-identifier-Apache-2.0
-LOCAL_LICENSE_CONDITIONS:= notice
-LOCAL_NOTICE_FILE:= $(LOCAL_PATH)/NOTICE
-LOCAL_MODULE_OWNER := qcom
-LOCAL_PROPRIETARY_MODULE := true
+LOCAL_VENDOR_MODULE := true
 
 LOCAL_C_INCLUDES := \
 	external/tinyalsa/include \
+        hardware/libhardware/include \
 	$(call include-path-for, audio-effects)
 
-LOCAL_HEADER_LIBRARIES += libsystem_headers
 include $(BUILD_SHARED_LIBRARY)

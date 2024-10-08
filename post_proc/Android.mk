@@ -1,14 +1,11 @@
-ifneq ($(filter msm8974 msm8226 msm8084 msm8992 msm8994 msm8996 msm8909 msm8998 sdm845 sdm710 msmnile,$(TARGET_BOARD_PLATFORM)),)
 
 LOCAL_PATH:= $(call my-dir)
 
-qcom_post_proc_common_cflags := \
-    -O2 -fvisibility=hidden \
-    -Wall -Werror \
-    -Wno-unused-function \
-    -Wno-unused-variable \
-
 include $(CLEAR_VARS)
+
+ifneq ($(strip $(AUDIO_FEATURE_ENABLED_PROXY_DEVICE)),false)
+    LOCAL_CFLAGS += -DAFE_PROXY_ENABLED
+endif
 
 LOCAL_SRC_FILES:= \
 	bundle.c \
@@ -16,9 +13,20 @@ LOCAL_SRC_FILES:= \
 	bass_boost.c \
 	virtualizer.c \
 	reverb.c \
-	effect_api.c
+	effect_api.c \
+	effect_util.c
 
-LOCAL_CFLAGS += $(qcom_post_proc_common_cflags)
+ifeq ($(strip $(AUDIO_FEATURE_ENABLED_HW_ACCELERATED_EFFECTS)),true)
+    LOCAL_CFLAGS += -DHW_ACCELERATED_EFFECTS
+    LOCAL_SRC_FILES += hw_accelerator.c
+endif
+
+LOCAL_CFLAGS+= -O2 -fvisibility=hidden
+LOCAL_CFLAGS += -Wno-sign-compare -Wno-unused-variable -Wno-unused-label -Wno-format
+
+ifeq ($(strip $(AUDIO_FEATURE_ENABLED_DTS_EAGLE)), true)
+    LOCAL_CFLAGS += -DDTS_EAGLE
+endif
 
 LOCAL_SHARED_LIBRARIES := \
 	libcutils \
@@ -26,98 +34,44 @@ LOCAL_SHARED_LIBRARIES := \
 	libtinyalsa
 
 LOCAL_MODULE_TAGS := optional
-LOCAL_MODULE_OWNER := qcom
-LOCAL_PROPRIETARY_MODULE := true
 
 LOCAL_MODULE_RELATIVE_PATH := soundfx
 LOCAL_MODULE:= libqcompostprocbundle
-LOCAL_LICENSE_KINDS:= SPDX-license-identifier-Apache-2.0
-LOCAL_LICENSE_CONDITIONS:= notice
+LOCAL_VENDOR_MODULE := true
 
 LOCAL_C_INCLUDES := \
 	external/tinyalsa/include \
+        hardware/libhardware/include \
 	$(call include-path-for, audio-effects)
 
-LOCAL_HEADER_LIBRARIES += libhardware_headers
-LOCAL_HEADER_LIBRARIES += libsystem_headers
-
-LOCAL_HEADER_LIBRARIES += generated_kernel_headers
+LOCAL_HEADER_LIBRARIES := generated_kernel_headers libsystem_headers libaudio_system_headers
 
 include $(BUILD_SHARED_LIBRARY)
-endif
 
-################################################################################
 
-ifneq ($(filter msm8992 msm8994 msm8996 msm8909 msm8998 sdm845 sdm710 msmnile,$(TARGET_BOARD_PLATFORM)),)
-
+ifeq ($(strip $(AUDIO_FEATURE_ENABLED_HW_ACCELERATED_EFFECTS)),true)
 include $(CLEAR_VARS)
 
-LOCAL_CFLAGS := -DLIB_AUDIO_HAL="audio.primary."$(TARGET_BOARD_PLATFORM)".so"
-
-LOCAL_SRC_FILES:= \
-	volume_listener.c
-
-LOCAL_CFLAGS += $(qcom_post_proc_common_cflags)
-
-LOCAL_SHARED_LIBRARIES := \
-	libcutils \
-	liblog \
-	libdl
-
-LOCAL_MODULE_RELATIVE_PATH := soundfx
-LOCAL_MODULE:= libvolumelistener
-LOCAL_LICENSE_KINDS:= SPDX-license-identifier-Apache-2.0
-LOCAL_LICENSE_CONDITIONS:= notice
-LOCAL_MODULE_OWNER := qcom
-LOCAL_PROPRIETARY_MODULE := true
+LOCAL_SRC_FILES := EffectsHwAcc.cpp
 
 LOCAL_C_INCLUDES := \
-        hardware/qcom/audio/hal \
-	$(call include-path-for, audio-effects)
+    $(call include-path-for, audio-effects)
 
-LOCAL_HEADER_LIBRARIES += libhardware_headers
-LOCAL_HEADER_LIBRARIES += libsystem_headers
+LOCAL_SHARED_LIBRARIES := \
+    liblog \
+    libeffects
 
-LOCAL_HEADER_LIBRARIES += generated_kernel_headers
+LOCAL_MODULE_TAGS := optional
 
-include $(BUILD_SHARED_LIBRARY)
+LOCAL_CFLAGS += -O2 -fvisibility=hidden
+LOCAL_CFLAGS += -Wno-sign-compare -Wno-unused-variable -Wno-unused-label -Wno-format
 
+ifeq ($(strip $(AUDIO_FEATURE_ENABLED_DTS_EAGLE)), true)
+LOCAL_CFLAGS += -DHW_ACC_HPX
 endif
 
-################################################################################
-ifeq ($(strip $(AUDIO_FEATURE_ENABLED_MAXX_AUDIO)), true)
+LOCAL_MODULE:= libhwacceffectswrapper
+LOCAL_VENDOR_MODULE := true
 
-include $(CLEAR_VARS)
-
-LOCAL_CFLAGS := -D HAL_LIB_NAME=\"audio.primary."$(TARGET_BOARD_PLATFORM)".so\"
-
-LOCAL_SRC_FILES:= \
-	ma_listener.c
-
-LOCAL_CFLAGS += $(qcom_post_proc_common_cflags)
-
-LOCAL_SHARED_LIBRARIES := \
-	libcutils \
-	liblog \
-	libdl
-
-LOCAL_MODULE_RELATIVE_PATH := soundfx
-LOCAL_MODULE:= libmalistener
-LOCAL_LICENSE_KINDS:= SPDX-license-identifier-Apache-2.0
-LOCAL_LICENSE_CONDITIONS:= notice
-LOCAL_MODULE_OWNER := google
-LOCAL_PROPRIETARY_MODULE := true
-
-LOCAL_C_INCLUDES := \
-	hardware/qcom/audio/hal \
-	system/media/audio/include/system \
-	$(call include-path-for, audio-effects)
-
-LOCAL_HEADER_LIBRARIES += libhardware_headers
-LOCAL_HEADER_LIBRARIES += libsystem_headers
-
-LOCAL_HEADER_LIBRARIES += generated_kernel_headers
-
-include $(BUILD_SHARED_LIBRARY)
-
+include $(BUILD_STATIC_LIBRARY)
 endif

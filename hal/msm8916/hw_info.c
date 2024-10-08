@@ -1,17 +1,30 @@
 /*
- * Copyright (C) 2016 The Android Open Source Project
+ * Copyright (c) 2014, 2016, The Linux Foundation. All rights reserved.
  *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions are
+ * met:
+ *   * Redistributions of source code must retain the above copyright
+ *     notice, this list of conditions and the following disclaimer.
+ *   * Redistributions in binary form must reproduce the above
+ *     copyright notice, this list of conditions and the following
+ *     disclaimer in the documentation and/or other materials provided
+ *     with the distribution.
+ *   * Neither the name of The Linux Foundation nor the names of its
+ *     contributors may be used to endorse or promote products derived
+ *     from this software without specific prior written permission.
  *
- *      http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
+ * THIS SOFTWARE IS PROVIDED "AS IS" AND ANY EXPRESS OR IMPLIED
+ * WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF
+ * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NON-INFRINGEMENT
+ * ARE DISCLAIMED.  IN NO EVENT SHALL THE COPYRIGHT OWNER OR CONTRIBUTORS
+ * BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
+ * CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
+ * SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR
+ * BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY,
+ * WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE
+ * OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN
+ * IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
 #define LOG_TAG "hardware_info"
@@ -38,24 +51,71 @@ struct hardware_info {
 
 #define ARRAY_SIZE(a) (sizeof(a) / sizeof((a)[0]))
 
-
 static void update_hardware_info_8x16(struct hardware_info *hw_info, const char *snd_card_name)
 {
-    if (!strcmp(snd_card_name, "msm8x16-snd-card") ||
-        !strcmp(snd_card_name, "msm8x16-snd-card-mtp")) {
+    if (!strcmp(snd_card_name, "msm8x16-snd-card")) {
+        strlcpy(hw_info->type, "", sizeof(hw_info->type));
         strlcpy(hw_info->name, "msm8x16", sizeof(hw_info->name));
-    } else if (!strcmp(snd_card_name, "msm8909-snd-card") ||
-               !strcmp(snd_card_name, "msm8909-pm8916-snd-card")) {
+        hw_info->snd_devices = NULL;
+        hw_info->num_snd_devices = 0;
+        strlcpy(hw_info->dev_extn, "", sizeof(hw_info->dev_extn));
+    } else if (!strcmp(snd_card_name, "msm8x16-snd-card-mtp")) {
+        strlcpy(hw_info->type, "", sizeof(hw_info->type));
+        strlcpy(hw_info->name, "msm8x16", sizeof(hw_info->name));
+        hw_info->snd_devices = NULL;
+        hw_info->num_snd_devices = 0;
+        strlcpy(hw_info->dev_extn, "", sizeof(hw_info->dev_extn));
+    } else if (!strcmp(snd_card_name, "msm8x16-skuh-snd-card")) {
+        strlcpy(hw_info->type, "skuh", sizeof(hw_info->type));
+        strlcpy(hw_info->name, "msm8x16", sizeof(hw_info->name));
+        hw_info->snd_devices = NULL;
+        hw_info->num_snd_devices = 0;
+        strlcpy(hw_info->dev_extn, "", sizeof(hw_info->dev_extn));
+    } else if (!strcmp(snd_card_name, "msm8x16-skui-snd-card")) {
+        strlcpy(hw_info->type, "skui", sizeof(hw_info->type));
+        strlcpy(hw_info->name, "msm8x16", sizeof(hw_info->name));
+        hw_info->snd_devices = NULL;
+        hw_info->num_snd_devices = 0;
+        strlcpy(hw_info->dev_extn, "", sizeof(hw_info->dev_extn));
+    } else if (!strcmp(snd_card_name, "msm8x16-skuhf-snd-card")) {
+        strlcpy(hw_info->type, "skuhf", sizeof(hw_info->type));
+        strlcpy(hw_info->name, "msm8x16", sizeof(hw_info->name));
+        hw_info->snd_devices = NULL;
+        hw_info->num_snd_devices = 0;
+        strlcpy(hw_info->dev_extn, "", sizeof(hw_info->dev_extn));
+    } else if (!strcmp(snd_card_name, "msm8939-snd-card")) {
+        strlcpy(hw_info->type, "", sizeof(hw_info->type));
+        strlcpy(hw_info->name, "msm8939", sizeof(hw_info->name));
+        hw_info->snd_devices = NULL;
+        hw_info->num_snd_devices = 0;
+        strlcpy(hw_info->dev_extn, "", sizeof(hw_info->dev_extn));
+    } else if (!strcmp(snd_card_name, "msm8939-snd-card-mtp")) {
+        strlcpy(hw_info->type, "", sizeof(hw_info->type));
+        strlcpy(hw_info->name, "msm8939", sizeof(hw_info->name));
+        hw_info->snd_devices = NULL;
+        hw_info->num_snd_devices = 0;
+        strlcpy(hw_info->dev_extn, "", sizeof(hw_info->dev_extn));
+    } else if (!strcmp(snd_card_name, "msm8939-snd-card-skuk")) {
+        strlcpy(hw_info->type, "skuk", sizeof(hw_info->type));
+        strlcpy(hw_info->name, "msm8939", sizeof(hw_info->name));
+        hw_info->snd_devices = NULL;
+        hw_info->num_snd_devices = 0;
+        strlcpy(hw_info->dev_extn, "", sizeof(hw_info->dev_extn));
+    } else if (!strcmp(snd_card_name, "msm8939-tapan-snd-card") ||
+               !strcmp(snd_card_name, "msm8939-tapan9302-snd-card")) {
+        strlcpy(hw_info->type, "", sizeof(hw_info->type));
+        strlcpy(hw_info->name, "msm8939", sizeof(hw_info->name));
+        hw_info->snd_devices = NULL;
+        hw_info->num_snd_devices = 0;
+        strlcpy(hw_info->dev_extn, "", sizeof(hw_info->dev_extn));
+    } else if (!strcmp(snd_card_name, "msm8909-snd-card")) {
+        strlcpy(hw_info->type, "", sizeof(hw_info->type));
         strlcpy(hw_info->name, "msm8909", sizeof(hw_info->name));
-    } else if (!strcmp(snd_card_name, "msm-bg-snd-card")) {
-        strlcpy(hw_info->name, "msm8909", sizeof(hw_info->name));
-    }  else if (!strcmp(snd_card_name, "msm8952-snd-card") ||
-                !strcmp(snd_card_name, "msm8952-snd-card-mtp")) {
-        strlcpy(hw_info->name, "msm8952", sizeof(hw_info->name));
-    }  else if (!strcmp(snd_card_name, "msm8952-l9300-snd-card")) {
-        strlcpy(hw_info->name, "msm8952", sizeof(hw_info->name));
+        hw_info->snd_devices = NULL;
+        hw_info->num_snd_devices = 0;
+        strlcpy(hw_info->dev_extn, "", sizeof(hw_info->dev_extn));
     } else {
-        ALOGW("%s: Not an  8x16/8909/8952 device", __func__);
+        ALOGW("%s: Not an  8x16/8939/8909 device", __func__);
     }
 }
 
@@ -64,22 +124,10 @@ void *hw_info_init(const char *snd_card_name)
     struct hardware_info *hw_info;
 
     hw_info = malloc(sizeof(struct hardware_info));
-    if (!hw_info) {
-        ALOGE("failed to allocate mem for hardware info");
-        return NULL;
-    }
 
-    if (strstr(snd_card_name, "msm8x16") || strstr(snd_card_name, "msm8909")
-        || strstr(snd_card_name, "msm8952") ||
-        strstr(snd_card_name, "msm-bg-snd-card")) {
+    if (strstr(snd_card_name, "msm8x16") || strstr(snd_card_name, "msm8939") ||
+        strstr(snd_card_name, "msm8909")) {
         ALOGV("8x16 - variant soundcard");
-
-        strlcpy(hw_info->type, "", sizeof(hw_info->type));
-        strlcpy(hw_info->name, "", sizeof(hw_info->name));
-        hw_info->snd_devices = NULL;
-        hw_info->num_snd_devices = 0;
-        strlcpy(hw_info->dev_extn, "", sizeof(hw_info->dev_extn));
-
         update_hardware_info_8x16(hw_info, snd_card_name);
     } else {
         ALOGE("%s: Unsupported target %s:",__func__, snd_card_name);
@@ -94,7 +142,7 @@ void hw_info_deinit(void *hw_info)
 {
     struct hardware_info *my_data = (struct hardware_info*) hw_info;
 
-    if(my_data)
+    if(!my_data)
         free(my_data);
 }
 
@@ -103,9 +151,6 @@ void hw_info_append_hw_type(void *hw_info, snd_device_t snd_device,
 {
     struct hardware_info *my_data = (struct hardware_info*) hw_info;
     uint32_t i = 0;
-
-    if (my_data == NULL)
-        return;
 
     snd_device_t *snd_devices =
             (snd_device_t *) my_data->snd_devices;

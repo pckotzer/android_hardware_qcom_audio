@@ -1,5 +1,8 @@
 /*
- * Copyright (C) 2014-2016 The Android Open Source Project
+ * Copyright (c) 2013-2014, 2016, The Linux Foundation. All rights reserved.
+ * Not a contribution.
+ *
+ * Copyright (C) 2013 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -19,8 +22,8 @@
 #define LOG_NDDEBUG 0
 
 #include <errno.h>
-#include <math.h>
 #include <stdlib.h>
+#include <math.h>
 #include <log/log.h>
 #include <cutils/str_parms.h>
 #include <sys/ioctl.h>
@@ -41,21 +44,17 @@
 
 #define VOICE_EXTN_PARAMETER_VALUE_MAX_LEN 256
 
-#define VOICE2_VSID              0x10DC1000
-#define VOLTE_VSID               0x10C02000
-#define QCHAT_VSID               0x10803000
-#define VOWLAN_VSID              0x10002000
-#define VOICEMMODE1_VSID         0x11C05000
-#define VOICEMMODE2_VSID         0x11DC5000
-#define ALL_VSID                 0xFFFFFFFF
+#define VOICE2_VSID 0x10DC1000
+#define VOLTE_VSID  0x10C02000
+#define QCHAT_VSID  0x10803000
+#define VOWLAN_VSID 0x10002000
+#define ALL_VSID    0xFFFFFFFF
 
 /* Voice Session Indices */
 #define VOICE2_SESS_IDX    (VOICE_SESS_IDX + 1)
 #define VOLTE_SESS_IDX     (VOICE_SESS_IDX + 2)
 #define QCHAT_SESS_IDX     (VOICE_SESS_IDX + 3)
 #define VOWLAN_SESS_IDX    (VOICE_SESS_IDX + 4)
-#define MMODE1_SESS_IDX    (VOICE_SESS_IDX + 5)
-#define MMODE2_SESS_IDX    (VOICE_SESS_IDX + 6)
 
 /* Call States */
 #define CALL_HOLD           (BASE_CALL_STATE + 2)
@@ -88,8 +87,6 @@ static bool is_valid_vsid(uint32_t vsid)
         vsid == VOICE2_VSID ||
         vsid == VOLTE_VSID ||
         vsid == QCHAT_VSID ||
-        vsid == VOICEMMODE1_VSID ||
-        vsid == VOICEMMODE2_VSID ||
         vsid == VOWLAN_VSID)
         return true;
     else
@@ -119,14 +116,6 @@ static audio_usecase_t voice_extn_get_usecase_for_session_idx(const int index)
 
     case VOWLAN_SESS_IDX:
         usecase_id = USECASE_VOWLAN_CALL;
-        break;
-
-    case MMODE1_SESS_IDX:
-        usecase_id = USECASE_VOICEMMODE1_CALL;
-        break;
-
-    case MMODE2_SESS_IDX:
-        usecase_id = USECASE_VOICEMMODE2_CALL;
         break;
 
     default:
@@ -160,7 +149,6 @@ static int update_calls(struct audio_device *adev)
     audio_usecase_t usecase_id = 0;
     enum voice_lch_mode lch_mode;
     struct voice_session *session = NULL;
-    int fd = 0;
     int ret = 0;
 
     ALOGD("%s: enter:", __func__);
@@ -195,11 +183,11 @@ static int update_calls(struct audio_device *adev)
             case CALL_LOCAL_HOLD:
                 ALOGD("%s: LOCAL_HOLD -> ACTIVE vsid:%x", __func__, session->vsid);
                 lch_mode = VOICE_LCH_STOP;
-                if (pcm_ioctl(session->pcm_tx, SNDRV_VOICE_IOCTL_LCH, &lch_mode) < 0) {
-                    ALOGE("LOCAL_HOLD -> ACTIVE failed");
-                } else {
+                ret = platform_update_lch(adev->platform, session, lch_mode);
+                if (ret < 0)
+                    ALOGE("%s: lch mode update failed, ret = %d", __func__, ret);
+                else
                     session->state.current = session->state.new;
-                }
                 break;
 
             default:
@@ -243,11 +231,11 @@ static int update_calls(struct audio_device *adev)
             case CALL_LOCAL_HOLD:
                 ALOGD("%s: CALL_LOCAL_HOLD -> HOLD vsid:%x", __func__, session->vsid);
                 lch_mode = VOICE_LCH_STOP;
-                if (pcm_ioctl(session->pcm_tx, SNDRV_VOICE_IOCTL_LCH, &lch_mode) < 0) {
-                    ALOGE("LOCAL_HOLD -> HOLD failed");
-                } else {
+                ret = platform_update_lch(adev->platform, session, lch_mode);
+                if (ret < 0)
+                    ALOGE("%s: lch mode update failed, ret = %d", __func__, ret);
+                else
                     session->state.current = session->state.new;
-                }
                 break;
 
             default:
@@ -265,11 +253,11 @@ static int update_calls(struct audio_device *adev)
                 ALOGD("%s: ACTIVE/CALL_HOLD -> LOCAL_HOLD vsid:%x", __func__,
                       session->vsid);
                 lch_mode = VOICE_LCH_START;
-                if (pcm_ioctl(session->pcm_tx, SNDRV_VOICE_IOCTL_LCH, &lch_mode) < 0) {
-                    ALOGE("LOCAL_HOLD -> HOLD failed");
-                } else {
+                ret = platform_update_lch(adev->platform, session, lch_mode);
+                if (ret < 0)
+                    ALOGE("%s: lch mode update failed, ret = %d", __func__, ret);
+                else
                     session->state.current = session->state.new;
-                }
                 break;
 
             default:
@@ -350,19 +338,6 @@ int voice_extn_is_call_state_active(struct audio_device *adev, bool *is_call_act
     return 0;
 }
 
-int voice_extn_is_in_call_rec_stream(struct stream_in *in, bool *in_call_rec)
-{
-    *in_call_rec = false;
-
-    if(in->source == AUDIO_SOURCE_VOICE_DOWNLINK ||
-       in->source == AUDIO_SOURCE_VOICE_UPLINK ||
-       in->source == AUDIO_SOURCE_VOICE_CALL) {
-       *in_call_rec = true;
-    }
-
-    return 0;
-}
-
 void voice_extn_init(struct audio_device *adev)
 {
     adev->voice.session[VOICE_SESS_IDX].vsid =  VOICE_VSID;
@@ -370,8 +345,6 @@ void voice_extn_init(struct audio_device *adev)
     adev->voice.session[VOLTE_SESS_IDX].vsid =  VOLTE_VSID;
     adev->voice.session[QCHAT_SESS_IDX].vsid =  QCHAT_VSID;
     adev->voice.session[VOWLAN_SESS_IDX].vsid = VOWLAN_VSID;
-    adev->voice.session[MMODE1_SESS_IDX].vsid = VOICEMMODE1_VSID;
-    adev->voice.session[MMODE2_SESS_IDX].vsid = VOICEMMODE2_VSID;
 }
 
 int voice_extn_get_session_from_use_case(struct audio_device *adev,
@@ -399,14 +372,6 @@ int voice_extn_get_session_from_use_case(struct audio_device *adev,
 
     case USECASE_VOWLAN_CALL:
         *session = &adev->voice.session[VOWLAN_SESS_IDX];
-        break;
-
-    case USECASE_VOICEMMODE1_CALL:
-        *session = &adev->voice.session[MMODE1_SESS_IDX];
-        break;
-
-    case USECASE_VOICEMMODE2_CALL:
-        *session = &adev->voice.session[MMODE2_SESS_IDX];
         break;
 
     default:
@@ -454,7 +419,6 @@ int voice_extn_stop_call(struct audio_device *adev)
 int voice_extn_set_parameters(struct audio_device *adev,
                               struct str_parms *parms)
 {
-    char *str;
     int value;
     int ret = 0, err;
     char *kv_pairs = str_parms_to_str(parms);
@@ -566,33 +530,47 @@ void voice_extn_get_parameters(const struct audio_device *adev,
         }
         str_parms_add_str(reply, AUDIO_PARAMETER_KEY_ALL_CALL_STATES, value);
     }
+    voice_extn_compress_voip_get_parameters(query, reply);
 
     str = str_parms_to_str(reply);
     ALOGV_IF(str != NULL, "%s: exit: returns \"%s\"", __func__, str);
     free(str);
 }
 
+void voice_extn_out_get_parameters(struct stream_out *out,
+                                   struct str_parms *query,
+                                   struct str_parms *reply)
+{
+    voice_extn_compress_voip_out_get_parameters(out, query, reply);
+}
+
+void voice_extn_in_get_parameters(struct stream_in *in,
+                                  struct str_parms *query,
+                                  struct str_parms *reply)
+{
+    voice_extn_compress_voip_in_get_parameters(in, query, reply);
+}
+
 #ifdef INCALL_MUSIC_ENABLED
 int voice_extn_check_and_set_incall_music_usecase(struct audio_device *adev,
                                                   struct stream_out *out)
 {
-    uint32_t session_id = get_session_id_with_state(adev, CALL_ACTIVE);
-    if (session_id == VOICEMMODE1_VSID)
+    uint32_t session_id = 0;
+
+    session_id = get_session_id_with_state(adev, CALL_LOCAL_HOLD);
+    if (session_id == VOICE_VSID) {
         out->usecase = USECASE_INCALL_MUSIC_UPLINK;
-    else if (session_id == VOICEMMODE2_VSID)
+    } else if (session_id == VOICE2_VSID) {
         out->usecase = USECASE_INCALL_MUSIC_UPLINK2;
-    else {
+    } else {
         ALOGE("%s: Invalid session id %x", __func__, session_id);
-        out->usecase = USECASE_INCALL_MUSIC_UPLINK;
+        return -EINVAL;
     }
 
     out->config = pcm_config_incall_music;
-    //FIXME: add support for MONO stream configuration when audioflinger mixer supports it
-    out->supported_channel_masks[0] = AUDIO_CHANNEL_OUT_STEREO;
-    out->channel_mask = AUDIO_CHANNEL_OUT_STEREO;
-    out->config.rate = out->sample_rate;
+    out->supported_channel_masks[0] = AUDIO_CHANNEL_OUT_MONO;
+    out->channel_mask = AUDIO_CHANNEL_OUT_MONO;
 
-    ALOGV("%s: mode=%d, usecase id=%d", __func__, adev->mode, out->usecase);
     return 0;
 }
 #endif

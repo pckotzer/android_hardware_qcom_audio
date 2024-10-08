@@ -17,17 +17,15 @@
 #define LOG_TAG "offload_visualizer"
 /*#define LOG_NDEBUG 0*/
 #include <assert.h>
-#include <dlfcn.h>
 #include <math.h>
-#include <pthread.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/prctl.h>
 #include <time.h>
-#include <unistd.h>
+#include <sys/prctl.h>
+#include <dlfcn.h>
 
 #include <cutils/list.h>
-#include <cutils/log.h>
+#include <log/log.h>
 #include <system/thread_defs.h>
 #include <tinyalsa/asoundlib.h>
 #include <audio_effects/effect_visualizer.h>
@@ -145,12 +143,6 @@ const effect_descriptor_t *descriptors[] = {
         NULL,
 };
 
-struct pcm_capture_config {
-    int snd_card_num;
-    int capture_device_id;
-};
-
-struct pcm_capture_config capture_config;
 
 pthread_once_t once = PTHREAD_ONCE_INIT;
 int init_status;
@@ -178,11 +170,16 @@ bool exit_thread;
 /* 0 if the capture thread was created successfully */
 int thread_status;
 
+
 #define DSP_OUTPUT_LATENCY_MS 0 /* Fudge factor for latency after capture point in audio DSP */
 
 /* Retry for delay for mixer open */
 #define RETRY_NUMBER 10
 #define RETRY_US 500000
+
+#define MIXER_CARD 0
+#define SOUND_CARD 0
+#define CAPTURE_DEVICE 8
 
 /* Proxy port supports only MMAP read and those fixed parameters*/
 #define AUDIO_CAPTURE_CHANNEL_COUNT 2
@@ -303,20 +300,40 @@ bool effects_enabled() {
     return false;
 }
 
-int configure_proxy_capture(struct mixer *mixer, int value) {
-    const char *proxy_ctl_name = "AFE_PCM_RX Audio Mixer MultiMedia4";
+int set_control(const char* name, struct mixer *mixer, int value) {
     struct mixer_ctl *ctl;
+
+    ctl = mixer_get_ctl_by_name(mixer, name);
+    if (ctl == NULL) {
+        ALOGW("%s: could not get %s ctl", __func__, name);
+        return -EINVAL;
+    }
+    if (mixer_ctl_set_value(ctl, 0, value) != 0) {
+        ALOGW("%s: error setting value %d on %s ", __func__, value, name);
+        return -EINVAL;
+    }
+
+    return 0;
+}
+
+int configure_proxy_capture(struct mixer *mixer, int value) {
+    int retval = 0;
 
     if (value && acdb_send_audio_cal)
         acdb_send_audio_cal(AFE_PROXY_ACDB_ID, ACDB_DEV_TYPE_OUT);
 
-    ctl = mixer_get_ctl_by_name(mixer, proxy_ctl_name);
-    if (ctl == NULL) {
-        ALOGW("%s: could not get %s ctl", __func__, proxy_ctl_name);
-        return -EINVAL;
-    }
-    if (mixer_ctl_set_value(ctl, 0, value) != 0)
-        ALOGW("%s: error setting value %d on %s ", __func__, value, proxy_ctl_name);
+    retval = set_control("AFE_PCM_RX Audio Mixer MultiMedia4", mixer, value);
+
+    if (retval != 0)
+        return retval;
+
+    // Extending visualizer to capture for compress2 path as well.
+    // for extending it to multiple offload either this needs to be extended
+    // or need to find better solution to enable only active offload sessions
+
+    retval = set_control("AFE_PCM_RX Audio Mixer MultiMedia7", mixer, value);
+    if (retval != 0)
+        return retval;
 
     return 0;
 }
@@ -340,10 +357,10 @@ void *capture_thread_loop(void *arg __unused)
 
     pthread_mutex_lock(&lock);
 
-    mixer = mixer_open(capture_config.snd_card_num);
+    mixer = mixer_open(MIXER_CARD);
     while (mixer == NULL && retry_num < RETRY_NUMBER) {
         usleep(RETRY_US);
-        mixer = mixer_open(capture_config.snd_card_num);
+        mixer = mixer_open(MIXER_CARD);
         retry_num++;
     }
     if (mixer == NULL) {
@@ -359,8 +376,7 @@ void *capture_thread_loop(void *arg __unused)
             if (!capture_enabled) {
                 ret = configure_proxy_capture(mixer, 1);
                 if (ret == 0) {
-                    pcm = pcm_open(capture_config.snd_card_num,
-                                   capture_config.capture_device_id,
+                    pcm = pcm_open(SOUND_CARD, CAPTURE_DEVICE,
                                    PCM_IN|PCM_MMAP|PCM_NOIRQ, &pcm_config_capture);
                     if (pcm && !pcm_is_ready(pcm)) {
                         ALOGW("%s: %s", __func__, pcm_get_error(pcm));
@@ -430,8 +446,7 @@ void *capture_thread_loop(void *arg __unused)
  */
 
 __attribute__ ((visibility ("default")))
-int visualizer_hal_start_output(audio_io_handle_t output, int pcm_id,
-                                int card_number, int pcm_capture_id) {
+int visualizer_hal_start_output(audio_io_handle_t output, int pcm_id) {
     int ret = 0;
     struct listnode *node;
 
@@ -448,12 +463,12 @@ int visualizer_hal_start_output(audio_io_handle_t output, int pcm_id,
         goto exit;
     }
 
-    ALOGV("%s card number %d pcm_capture_id %d",
-          __func__, card_number, pcm_capture_id);
-    capture_config.snd_card_num = card_number;
-    capture_config.capture_device_id = pcm_capture_id;
-
     output_context_t *out_ctxt = (output_context_t *)malloc(sizeof(output_context_t));
+    if (out_ctxt == NULL) {
+        ALOGE("%s fail to allocate memory", __func__);
+        ret = -ENOMEM;
+        goto exit;
+    }
     out_ctxt->handle = output;
     list_init(&out_ctxt->effects_list);
 
@@ -620,7 +635,7 @@ int visualizer_init(effect_context_t *context)
     visu_ctxt->scaling_mode = VISUALIZER_SCALING_MODE_NORMALIZED;
 
     // measurement initialization
-    visu_ctxt->channel_count = audio_channel_count_from_out_mask(context->config.inputCfg.channels);
+    visu_ctxt->channel_count = popcount(context->config.inputCfg.channels);
     visu_ctxt->meas_mode = MEASUREMENT_MODE_NONE;
     visu_ctxt->meas_wndw_size_in_buffers = MEASUREMENT_WINDOW_MAX_SIZE_IN_BUFFERS;
     visu_ctxt->meas_buffer_idx = 0;
@@ -835,16 +850,13 @@ int visualizer_command(effect_context_t * context, uint32_t cmdCode, uint32_t cm
         if (context->state == EFFECT_STATE_ACTIVE) {
             int32_t latency_ms = visu_ctxt->latency;
             const uint32_t delta_ms = visualizer_get_delta_time_ms_from_updated_time(visu_ctxt);
-            if (latency_ms < delta_ms) {
+            latency_ms -= delta_ms;
+            if (latency_ms < 0) {
                 latency_ms = 0;
-            } else {
-                latency_ms -= delta_ms;
             }
             const uint32_t delta_smp = context->config.inputCfg.samplingRate * latency_ms / 1000;
 
-            int32_t capture_point = 0;
-            __builtin_sub_overflow(visu_ctxt->capture_idx, visu_ctxt->capture_size + delta_smp,
-                                   &capture_point);
+            int32_t capture_point = visu_ctxt->capture_idx - visu_ctxt->capture_size - delta_smp;
             int32_t capture_size = visu_ctxt->capture_size;
             if (capture_point < 0) {
                 int32_t size = -capture_point;
@@ -978,6 +990,10 @@ int effect_lib_create(const effect_uuid_t *uuid,
     if (memcmp(uuid, &visualizer_descriptor.uuid, sizeof(effect_uuid_t)) == 0) {
         visualizer_context_t *visu_ctxt = (visualizer_context_t *)calloc(1,
                                                                      sizeof(visualizer_context_t));
+        if (visu_ctxt == NULL) {
+            ALOGE("%s fail to allocate memory", __func__);
+            return -ENOMEM;
+        }
         context = (effect_context_t *)visu_ctxt;
         context->ops.init = visualizer_init;
         context->ops.reset = visualizer_reset;
