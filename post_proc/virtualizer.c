@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2013-2015, 2017, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2013-2015, 2017-2019, The Linux Foundation. All rights reserved.
  * Not a Contribution.
  *
  * Copyright (C) 2013 The Android Open Source Project
@@ -21,6 +21,7 @@
 //#define LOG_NDEBUG 0
 
 #include <cutils/list.h>
+#include <cutils/properties.h>
 #include <log/log.h>
 #include <tinyalsa/asoundlib.h>
 #include <sound/audio_effects.h>
@@ -28,6 +29,20 @@
 
 #include "effect_api.h"
 #include "virtualizer.h"
+
+#define VIRUALIZER_MAX_LATENCY 30
+
+#ifdef AUDIO_FEATURE_ENABLED_GCOV
+extern void  __gcov_flush();
+static void enable_gcov()
+{
+    __gcov_flush();
+}
+#else
+static void enable_gcov()
+{
+}
+#endif
 
 /* Offload Virtualizer UUID: 509a4498-561a-4bea-b3b1-0002a5d5c51b */
 const effect_descriptor_t virtualizer_descriptor = {
@@ -63,7 +78,8 @@ int virtualizer_set_strength(virtualizer_context_t *context, uint32_t strength)
      *  For better user experience, explicitly disable virtualizer module
      *  when strength is 0.
      */
-    offload_virtualizer_set_enable_flag(&(context->offload_virt),
+    if (context->enabled_by_client)
+        offload_virtualizer_set_enable_flag(&(context->offload_virt),
                                         ((strength > 0) && !(context->temp_disabled)) ?
                                         true : false);
     offload_virtualizer_set_strength(&(context->offload_virt), strength);
@@ -89,13 +105,14 @@ int virtualizer_set_strength(virtualizer_context_t *context, uint32_t strength)
  *  true      device is applicable for effect
  */
 bool virtualizer_is_device_supported(audio_devices_t device) {
+    if ((property_get_bool("vendor.audio.feature.afe_proxy.enable", false)) &&
+        (device == AUDIO_DEVICE_OUT_PROXY))
+           return false;
+
     switch (device) {
     case AUDIO_DEVICE_OUT_SPEAKER:
     case AUDIO_DEVICE_OUT_BLUETOOTH_SCO_CARKIT:
     case AUDIO_DEVICE_OUT_BLUETOOTH_A2DP_SPEAKER:
-#ifdef AFE_PROXY_ENABLED
-    case AUDIO_DEVICE_OUT_PROXY:
-#endif
     case AUDIO_DEVICE_OUT_AUX_DIGITAL:
     case AUDIO_DEVICE_OUT_USB_ACCESSORY:
     case AUDIO_DEVICE_OUT_ANLG_DOCK_HEADSET:
@@ -140,8 +157,7 @@ int virtualizer_force_virtualization_mode(virtualizer_context_t *context,
     virtualizer_context_t *virt_ctxt = (virtualizer_context_t *)context;
     int status = 0;
     bool use_virt = false;
-    int is_virt_enabled =
-        offload_virtualizer_get_enable_flag(&(virt_ctxt->offload_virt));
+    int is_virt_enabled = virt_ctxt->enabled_by_client;
 
     ALOGV("%s: ctxt %p, forcedDev=0x%x enabled=%d tmpDisabled=%d", __func__, virt_ctxt,
             forced_device, is_virt_enabled, virt_ctxt->temp_disabled);
@@ -278,7 +294,6 @@ int virtualizer_get_parameter(effect_context_t *context, effect_param_t *p,
     int32_t *param_tmp = (int32_t *)p->data;
     int32_t param = *param_tmp++;
     void *value = p->data + voffset;
-    int i;
 
     ALOGV("%s: ctxt %p, param %d", __func__, virt_ctxt, param);
 
@@ -302,6 +317,11 @@ int virtualizer_get_parameter(effect_context_t *context, effect_param_t *p,
     case VIRTUALIZER_PARAM_VIRTUALIZATION_MODE:
         if (p->vsize != sizeof(uint32_t))
            p->status = -EINVAL;
+        p->vsize = sizeof(uint32_t);
+        break;
+    case VIRTUALIZER_PARAM_LATENCY:
+        if (p->vsize < sizeof(uint32_t))
+            p->status = -EINVAL;
         p->vsize = sizeof(uint32_t);
         break;
     default:
@@ -345,6 +365,10 @@ int virtualizer_get_parameter(effect_context_t *context, effect_param_t *p,
 
     case VIRTUALIZER_PARAM_VIRTUALIZATION_MODE:
         *(uint32_t *)value  = (uint32_t) virtualizer_get_virtualization_mode(virt_ctxt);
+        break;
+
+    case VIRTUALIZER_PARAM_LATENCY:
+        *(uint32_t *)value = VIRUALIZER_MAX_LATENCY;
         break;
 
     default:
@@ -401,7 +425,7 @@ int virtualizer_set_device(effect_context_t *context, uint32_t device)
         // default case unless configuration is forced
         if (virtualizer_is_device_supported(device) == false) {
             if (!virt_ctxt->temp_disabled) {
-                if (effect_is_active(&virt_ctxt->common)) {
+                if (effect_is_active(&virt_ctxt->common) && virt_ctxt->enabled_by_client) {
                     offload_virtualizer_set_enable_flag(&(virt_ctxt->offload_virt), false);
                     if (virt_ctxt->ctl)
                         offload_virtualizer_send_params(virt_ctxt->ctl,
@@ -417,7 +441,7 @@ int virtualizer_set_device(effect_context_t *context, uint32_t device)
             }
         } else {
             if (virt_ctxt->temp_disabled) {
-                if (effect_is_active(&virt_ctxt->common)) {
+                if (effect_is_active(&virt_ctxt->common) && virt_ctxt->enabled_by_client) {
                     offload_virtualizer_set_enable_flag(&(virt_ctxt->offload_virt), true);
                     if (virt_ctxt->ctl)
                         offload_virtualizer_send_params(virt_ctxt->ctl,
@@ -438,10 +462,8 @@ int virtualizer_set_device(effect_context_t *context, uint32_t device)
     return 0;
 }
 
-int virtualizer_reset(effect_context_t *context)
+int virtualizer_reset(effect_context_t *context __unused)
 {
-    virtualizer_context_t *virt_ctxt = (virtualizer_context_t *)context;
-
     return 0;
 }
 
@@ -469,12 +491,13 @@ int virtualizer_init(effect_context_t *context)
 
     set_config(context, &context->config);
 
+    virt_ctxt->enabled_by_client = false;
     virt_ctxt->temp_disabled = false;
     virt_ctxt->hw_acc_fd = -1;
     virt_ctxt->forced_device = AUDIO_DEVICE_NONE;
     virt_ctxt->device = AUDIO_DEVICE_NONE;
     memset(&(virt_ctxt->offload_virt), 0, sizeof(struct virtualizer_params));
-
+    enable_gcov();
     return 0;
 }
 
@@ -484,6 +507,7 @@ int virtualizer_enable(effect_context_t *context)
 
     ALOGV("%s: ctxt %p, strength %d", __func__, virt_ctxt, virt_ctxt->strength);
 
+    virt_ctxt->enabled_by_client = true;
     if (!offload_virtualizer_get_enable_flag(&(virt_ctxt->offload_virt)) &&
         !(virt_ctxt->temp_disabled)) {
         offload_virtualizer_set_enable_flag(&(virt_ctxt->offload_virt), true);
@@ -498,6 +522,7 @@ int virtualizer_enable(effect_context_t *context)
                                            OFFLOAD_SEND_VIRTUALIZER_ENABLE_FLAG |
                                            OFFLOAD_SEND_VIRTUALIZER_STRENGTH);
     }
+    enable_gcov();
     return 0;
 }
 
@@ -506,6 +531,8 @@ int virtualizer_disable(effect_context_t *context)
     virtualizer_context_t *virt_ctxt = (virtualizer_context_t *)context;
 
     ALOGV("%s: ctxt %p", __func__, virt_ctxt);
+
+    virt_ctxt->enabled_by_client = false;
     if (offload_virtualizer_get_enable_flag(&(virt_ctxt->offload_virt))) {
         offload_virtualizer_set_enable_flag(&(virt_ctxt->offload_virt), false);
         if (virt_ctxt->ctl)
@@ -517,6 +544,7 @@ int virtualizer_disable(effect_context_t *context)
                                            &virt_ctxt->offload_virt,
                                            OFFLOAD_SEND_VIRTUALIZER_ENABLE_FLAG);
     }
+    enable_gcov();
     return 0;
 }
 
@@ -537,6 +565,7 @@ int virtualizer_start(effect_context_t *context, output_context_t *output)
                                            OFFLOAD_SEND_VIRTUALIZER_ENABLE_FLAG |
                                            OFFLOAD_SEND_VIRTUALIZER_STRENGTH);
     }
+    enable_gcov();
     return 0;
 }
 
@@ -553,6 +582,7 @@ int virtualizer_stop(effect_context_t *context, output_context_t *output __unuse
                                         OFFLOAD_SEND_VIRTUALIZER_ENABLE_FLAG);
     }
     virt_ctxt->ctl = NULL;
+    enable_gcov();
     return 0;
 }
 

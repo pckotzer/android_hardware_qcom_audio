@@ -14,10 +14,13 @@
  * limitations under the License.
  */
 
-#include <log/log.h>
-#include <string.h>
+#include <utils/Log.h>
 #include <stdlib.h>
+#include <string.h>
 #include "effect_util.h"
+#include <string.h>
+#include <unistd.h>
+#include <stdio.h>
 
 #ifdef LOG_TAG
 #undef LOG_TAG

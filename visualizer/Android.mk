@@ -12,31 +12,57 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+ifneq ($(AUDIO_USE_STUB_HAL), true)
 LOCAL_PATH:= $(call my-dir)
 
 include $(CLEAR_VARS)
 
 LOCAL_SRC_FILES:= \
-	offload_visualizer.c
+    offload_visualizer.c
 
 LOCAL_CFLAGS+= -O2 -fvisibility=hidden
-LOCAL_CFLAGS += -Wno-unused-variable
 
+LOCAL_CFLAGS += \
+    -Wall \
+    -Werror \
+    -Wno-unused-variable \
+    -Wno-unused-parameter \
+    -Wno-gnu-designator \
+    -Wno-unused-value \
+    -Wno-typedef-redefinition
+
+ifeq ($(strip $(AUDIO_FEATURE_ENABLED_GCOV)),true)
+LOCAL_CFLAGS += --coverage -fprofile-arcs -ftest-coverage
+LOCAL_CPPFLAGS += --coverage -fprofile-arcs -ftest-coverage
+LOCAL_STATIC_LIBRARIES += libprofile_rt
+endif
+
+LOCAL_HEADER_LIBRARIES := libsystem_headers \
+                          libhardware_headers
 LOCAL_SHARED_LIBRARIES := \
-	libcutils \
-	liblog \
-	libdl \
-	libtinyalsa
-
-LOCAL_HEADER_LIBRARIES := libsystem_headers libaudio_system_headers
+    libcutils \
+    liblog \
+    libdl \
+    libtinyalsa
 
 LOCAL_MODULE_RELATIVE_PATH := soundfx
 LOCAL_MODULE:= libqcomvisualizer
 LOCAL_VENDOR_MODULE := true
 
 LOCAL_C_INCLUDES := \
-	external/tinyalsa/include \
-        hardware/libhardware/include \
-	$(call include-path-for, audio-effects)
+    external/tinyalsa/include \
+    $(call include-path-for, audio-effects)
+
+LOCAL_CFLAGS += -Wno-unused-variable
+LOCAL_CFLAGS += -Wno-sign-compare
+LOCAL_CFLAGS += -Wno-unused-parameter
+LOCAL_CFLAGS += -Wno-unused-label
+LOCAL_CFLAGS += -Wno-gnu-designator
+LOCAL_CFLAGS += -Wno-typedef-redefinition
+LOCAL_CFLAGS += -Wno-shorten-64-to-32
+LOCAL_CFLAGS += -Wno-tautological-compare
+LOCAL_CFLAGS += -Wno-unused-function
+LOCAL_CFLAGS += -Wno-unused-local-typedef
 
 include $(BUILD_SHARED_LIBRARY)
+endif

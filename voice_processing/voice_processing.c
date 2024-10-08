@@ -16,10 +16,12 @@
 
 #define LOG_TAG "voice_processing"
 /*#define LOG_NDEBUG 0*/
+#include <stdlib.h>
 #include <dlfcn.h>
 #include <stdlib.h>
 #include <log/log.h>
 #include <cutils/list.h>
+#include <unistd.h>
 #include <hardware/audio_effect.h>
 #include <audio_effects/effect_aec.h>
 #include <audio_effects/effect_agc.h>
@@ -30,7 +32,7 @@
 // local definitions
 //------------------------------------------------------------------------------
 
-#define EFFECTS_DESCRIPTOR_LIBRARY_PATH "/system/lib/soundfx/libqcomvoiceprocessingdescriptors.so"
+#define EFFECTS_DESCRIPTOR_LIBRARY_PATH "/vendor/lib/soundfx/libqcomvoiceprocessingdescriptors.so"
 
 // types of pre processing modules
 enum effect_id
@@ -40,6 +42,18 @@ enum effect_id
 //ENABLE_AGC    AGC_ID,        // Automatic Gain Control
     NUM_ID
 };
+
+#ifdef AUDIO_FEATURE_ENABLED_GCOV
+extern void  __gcov_flush();
+static void enable_gcov()
+{
+    __gcov_flush();
+}
+#else
+static void enable_gcov()
+{
+}
+#endif
 
 // Session state
 enum session_state {
@@ -90,7 +104,8 @@ static const effect_descriptor_t qcom_default_aec_descriptor = {
         { 0x7b491460, 0x8d4d, 0x11e0, 0xbd61, { 0x00, 0x02, 0xa5, 0xd5, 0xc5, 0x1b } }, // type
         { 0x0f8d0d2a, 0x59e5, 0x45fe, 0xb6e4, { 0x24, 0x8c, 0x8a, 0x79, 0x91, 0x09 } }, // uuid
         EFFECT_CONTROL_API_VERSION,
-        (EFFECT_FLAG_TYPE_PRE_PROC|EFFECT_FLAG_DEVICE_IND),
+        (EFFECT_FLAG_TYPE_PRE_PROC|EFFECT_FLAG_DEVICE_IND|EFFECT_FLAG_HW_ACC_TUNNEL|
+         EFFECT_FLAG_OFFLOAD_SUPPORTED),
         0,
         0,
         "Acoustic Echo Canceler",
@@ -102,7 +117,8 @@ static const effect_descriptor_t qcom_default_ns_descriptor = {
         { 0x58b4b260, 0x8e06, 0x11e0, 0xaa8e, { 0x00, 0x02, 0xa5, 0xd5, 0xc5, 0x1b } }, // type
         { 0x1d97bb0b, 0x9e2f, 0x4403, 0x9ae3, { 0x58, 0xc2, 0x55, 0x43, 0x06, 0xf8 } }, // uuid
         EFFECT_CONTROL_API_VERSION,
-        (EFFECT_FLAG_TYPE_PRE_PROC|EFFECT_FLAG_DEVICE_IND),
+        (EFFECT_FLAG_TYPE_PRE_PROC|EFFECT_FLAG_DEVICE_IND|EFFECT_FLAG_HW_ACC_TUNNEL|
+         EFFECT_FLAG_OFFLOAD_SUPPORTED),
         0,
         0,
         "Noise Suppression",
@@ -398,7 +414,7 @@ static struct session_s *get_session(int32_t id, int32_t  sessionId, int32_t  io
 
     list_for_each(node, &session_list) {
         session = node_to_item(node, struct session_s, node);
-        if (session->io == ioId) {
+        if (session->id == sessionId) {
             if (session->created_msk & (1 << id)) {
                 ALOGV("get_session() effect %d already created", id);
                 return NULL;
@@ -707,6 +723,7 @@ static int lib_create(const effect_uuid_t *uuid,
         list_remove(&session->node);
         free(session);
     }
+    enable_gcov();
     return status;
 }
 
@@ -728,7 +745,7 @@ static int lib_release(effect_handle_t interface)
             return 0;
         }
     }
-
+    enable_gcov();
     return -EINVAL;
 }
 
@@ -758,11 +775,11 @@ static int lib_get_descriptor(const effect_uuid_t *uuid,
 // This is the only symbol that needs to be exported
 __attribute__ ((visibility ("default")))
 audio_effect_library_t AUDIO_EFFECT_LIBRARY_INFO_SYM = {
-    .tag = AUDIO_EFFECT_LIBRARY_TAG,
-    .version = EFFECT_LIBRARY_API_VERSION,
-    .name = "MSM8994 Audio Preprocessing Library",
-    .implementor = "The Android Open Source Project",
-    .create_effect = lib_create,
-    .release_effect = lib_release,
-    .get_descriptor = lib_get_descriptor
+    tag : AUDIO_EFFECT_LIBRARY_TAG,
+    version : EFFECT_LIBRARY_API_VERSION,
+    name : "MSM8960 Audio Preprocessing Library",
+    implementor : "The Android Open Source Project",
+    create_effect : lib_create,
+    release_effect : lib_release,
+    get_descriptor : lib_get_descriptor
 };

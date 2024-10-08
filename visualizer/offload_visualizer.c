@@ -23,6 +23,8 @@
 #include <time.h>
 #include <sys/prctl.h>
 #include <dlfcn.h>
+#include <pthread.h>
+#include <unistd.h>
 
 #include <cutils/list.h>
 #include <log/log.h>
@@ -38,12 +40,29 @@ static void* acdb_handle;
 
 typedef void (*acdb_send_audio_cal_t)(int, int);
 
+#ifdef AUDIO_FEATURE_ENABLED_GCOV
+extern void  __gcov_flush();
+static void enable_gcov()
+{
+    __gcov_flush();
+}
+#else
+static void enable_gcov()
+{
+}
+#endif
+
 acdb_send_audio_cal_t acdb_send_audio_cal;
 
 enum {
     EFFECT_STATE_UNINITIALIZED,
     EFFECT_STATE_INITIALIZED,
     EFFECT_STATE_ACTIVE,
+};
+
+enum pcm_device_param {
+    SND_CARD_NUM,
+    DEVICE_ID
 };
 
 typedef struct effect_context_s effect_context_t;
@@ -81,11 +100,11 @@ struct effect_context_s {
     effect_ops_t ops;
 };
 
-struct output_context_s {
+typedef struct output_context_s {
     struct listnode outputs_list_node;  /* node in active_outputs_list */
     audio_io_handle_t handle; /* io handle */
     struct listnode effects_list; /* list of effects attached to this output */
-};
+} output_context_t;
 
 
 /* maximum time since last capture buffer update before resetting capture buffer. This means
@@ -179,7 +198,10 @@ int thread_status;
 
 #define MIXER_CARD 0
 #define SOUND_CARD 0
-#define CAPTURE_DEVICE 8
+
+#ifndef CAPTURE_DEVICE
+#define CAPTURE_DEVICE 7
+#endif
 
 /* Proxy port supports only MMAP read and those fixed parameters*/
 #define AUDIO_CAPTURE_CHANNEL_COUNT 2
@@ -218,6 +240,7 @@ static void init_once() {
 
 int lib_init() {
     pthread_once(&once, init_once);
+    enable_gcov();
     return init_status;
 }
 
@@ -338,8 +361,97 @@ int configure_proxy_capture(struct mixer *mixer, int value) {
     return 0;
 }
 
+// Get sound card number from pcm device
+int get_snd_card_num(char *device_info)
+{
+    char *token = NULL, *saveptr = NULL;;
+    int num = -1;
 
-void *capture_thread_loop(void *arg __unused)
+    token = strtok_r(device_info, ": ", &saveptr);
+    token = strtok_r(token, "-", &saveptr);
+    if (token)
+        num = atoi(token);
+
+    return num;
+}
+
+// Get device id from pcm device
+int get_device_id(char *device_info)
+{
+    char *token = NULL, *saveptr = NULL;
+    int id = -1;
+
+    token = strtok_r(device_info, ": ", &saveptr);
+    token = strtok_r(token, "-", &saveptr);
+    while (token != NULL) {
+        token = strtok_r(NULL, "-", &saveptr);
+        if (token) {
+            id = atoi(token);
+            break;
+        }
+    }
+
+    return id;
+}
+
+int parse_device_info(int param, char *device_info)
+{
+    switch (param) {
+        case SND_CARD_NUM:
+            return get_snd_card_num(device_info);
+        case DEVICE_ID:
+            return get_device_id(device_info);
+        default:
+            ALOGE("%s: invalid pcm device param", __func__);
+            return -1;
+    }
+}
+
+/*
+* Parse a pcm device from procfs
+* Entries in pcm file will have one of two formats:
+* <snd_card_num>-<device_id>: <descriptor> : : <playback> : <capture>
+* <snd_card_num>-<device_id>: <descriptor> : : <playback or capture>
+*/
+int parse_pcm_device(char *descriptor, int param)
+{
+    const char *pcm_devices_path = "/proc/asound/pcm";
+    char *device_info = NULL;
+    size_t len = 0;
+    ssize_t bytes_read = -1;
+    FILE *fp = NULL;
+    int ret = -1;
+
+    if (descriptor == NULL) {
+        ALOGE("%s: pcm device descriptor is NULL", __func__);
+        return ret;
+    }
+
+    if ((fp = fopen(pcm_devices_path, "r")) == NULL) {
+        ALOGE("Cannot open %s file to get list of pcm devices",
+              pcm_devices_path);
+        return ret;
+    }
+
+    while ((bytes_read = getline(&device_info, &len, fp) != -1)) {
+        if (strstr(device_info, descriptor)) {
+            ret = parse_device_info(param, device_info);
+            break;
+        }
+    }
+
+    if (device_info) {
+        free(device_info);
+        device_info = NULL;
+    }
+
+    fclose(fp);
+    fp = NULL;
+
+    return ret;
+}
+
+void *capture_thread_loop(void *arg)
 {
     int16_t data[AUDIO_CAPTURE_PERIOD_SIZE * AUDIO_CAPTURE_CHANNEL_COUNT * sizeof(int16_t)];
     audio_buffer_t buf;
@@ -350,6 +462,8 @@ void *capture_thread_loop(void *arg __unused)
     struct pcm *pcm = NULL;
     int ret;
     int retry_num = 0;
+    int sound_card = SOUND_CARD;
+    int capture_device = CAPTURE_DEVICE;
 
     ALOGD("thread enter");
 
@@ -376,13 +490,22 @@ void *capture_thread_loop(void *arg __unused)
             if (!capture_enabled) {
                 ret = configure_proxy_capture(mixer, 1);
                 if (ret == 0) {
-                    pcm = pcm_open(SOUND_CARD, CAPTURE_DEVICE,
+                    sound_card =
+                       parse_pcm_device("AFE-PROXY TX", SND_CARD_NUM);
+                    sound_card =
+                       (sound_card == -1)? SOUND_CARD : sound_card;
+                    capture_device =
+                       parse_pcm_device("AFE-PROXY TX", DEVICE_ID);
+                    capture_device =
+                       (capture_device == -1)? CAPTURE_DEVICE : capture_device;
+                    pcm = pcm_open(sound_card, capture_device,
                                    PCM_IN|PCM_MMAP|PCM_NOIRQ, &pcm_config_capture);
                     if (pcm && !pcm_is_ready(pcm)) {
                         ALOGW("%s: %s", __func__, pcm_get_error(pcm));
                         pcm_close(pcm);
                         pcm = NULL;
                         configure_proxy_capture(mixer, 0);
+                        pthread_cond_wait(&cond, &lock);
                     } else {
                         capture_enabled = true;
                         ALOGD("%s: capture ENABLED", __func__);
@@ -556,7 +679,6 @@ int set_config(effect_context_t *context, effect_config_t *config)
     if (config->inputCfg.samplingRate != config->outputCfg.samplingRate) return -EINVAL;
     if (config->inputCfg.channels != config->outputCfg.channels) return -EINVAL;
     if (config->inputCfg.format != config->outputCfg.format) return -EINVAL;
-    if (config->inputCfg.channels != AUDIO_CHANNEL_OUT_STEREO) return -EINVAL;
     if (config->outputCfg.accessMode != EFFECT_BUFFER_ACCESS_WRITE &&
             config->outputCfg.accessMode != EFFECT_BUFFER_ACCESS_ACCUMULATE) return -EINVAL;
     if (config->inputCfg.format != AUDIO_FORMAT_PCM_16_BIT) return -EINVAL;
@@ -698,7 +820,7 @@ int visualizer_get_parameter(effect_context_t *context, effect_param_t *p, uint3
     return 0;
 }
 
-int visualizer_set_parameter(effect_context_t *context, effect_param_t *p, uint32_t size __unused)
+int visualizer_set_parameter(effect_context_t *context, effect_param_t *p, uint32_t size)
 {
     visualizer_context_t *visu_ctxt = (visualizer_context_t *)context;
 
@@ -831,8 +953,8 @@ int visualizer_process(effect_context_t *context,
     return 0;
 }
 
-int visualizer_command(effect_context_t * context, uint32_t cmdCode, uint32_t cmdSize __unused,
-        void *pCmdData __unused, uint32_t *replySize, void *pReplyData)
+int visualizer_command(effect_context_t * context, uint32_t cmdCode, uint32_t cmdSize,
+        void *pCmdData, uint32_t *replySize, void *pReplyData)
 {
     visualizer_context_t * visu_ctxt = (visualizer_context_t *)context;
 
@@ -966,7 +1088,7 @@ int visualizer_command(effect_context_t * context, uint32_t cmdCode, uint32_t cm
  */
 
 int effect_lib_create(const effect_uuid_t *uuid,
-                         int32_t sessionId __unused,
+                         int32_t sessionId,
                          int32_t ioId,
                          effect_handle_t *pHandle) {
     int ret;
@@ -1087,8 +1209,8 @@ int effect_lib_get_descriptor(const effect_uuid_t *uuid,
 
  /* Stub function for effect interface: never called for offloaded effects */
 int effect_process(effect_handle_t self,
-                       audio_buffer_t *inBuffer __unused,
-                       audio_buffer_t *outBuffer __unused)
+                       audio_buffer_t *inBuffer,
+                       audio_buffer_t *outBuffer)
 {
     effect_context_t * context = (effect_context_t *)self;
     int status = 0;
@@ -1315,11 +1437,11 @@ const struct effect_interface_s effect_interface = {
 
 __attribute__ ((visibility ("default")))
 audio_effect_library_t AUDIO_EFFECT_LIBRARY_INFO_SYM = {
-    .tag = AUDIO_EFFECT_LIBRARY_TAG,
-    .version = EFFECT_LIBRARY_API_VERSION,
-    .name = "Visualizer Library",
-    .implementor = "The Android Open Source Project",
-    .create_effect = effect_lib_create,
-    .release_effect = effect_lib_release,
-    .get_descriptor = effect_lib_get_descriptor,
+    tag : AUDIO_EFFECT_LIBRARY_TAG,
+    version : EFFECT_LIBRARY_API_VERSION,
+    name : "Visualizer Library",
+    implementor : "The Android Open Source Project",
+    create_effect : effect_lib_create,
+    release_effect : effect_lib_release,
+    get_descriptor : effect_lib_get_descriptor,
 };

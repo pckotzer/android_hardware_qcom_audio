@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2013 - 2014, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2013 - 2014, 2017, The Linux Foundation. All rights reserved.
  * Not a Contribution.
  *
  * Copyright (C) 2013 The Android Open Source Project
@@ -29,11 +29,17 @@
 #include <log/log.h>
 
 #include "audio_hw.h"
-#include "platform.h"
-#include "platform_api.h"
+//#include "platform.h"
+//#include "platform_api.h"
 
 #include "sound/compress_params.h"
 #include "sound/compress_offload.h"
+
+#ifdef DYNAMIC_LOG_ENABLED
+#include <log_xml_parser.h>
+#define LOG_MASK HAL_MOD_FILE_COMPR_CAP
+#include <log_utils.h>
+#endif
 
 #ifdef COMPRESS_CAPTURE_ENABLED
 
@@ -51,7 +57,7 @@ static struct compress_in_module c_in_mod = {
 };
 
 
-void audio_extn_compr_cap_init(struct stream_in *in)
+void compr_cap_init(struct stream_in *in)
 {
     in->usecase = USECASE_AUDIO_RECORD_COMPRESS;
     in->config.channels = COMPRESS_IN_CONFIG_CHANNELS;
@@ -61,7 +67,7 @@ void audio_extn_compr_cap_init(struct stream_in *in)
     c_in_mod.in_buf = (uint8_t*)calloc(1, in->config.period_size*2);
 }
 
-void audio_extn_compr_cap_deinit()
+void compr_cap_deinit()
 {
     if (c_in_mod.in_buf) {
         free(c_in_mod.in_buf);
@@ -69,7 +75,7 @@ void audio_extn_compr_cap_deinit()
     }
 }
 
-bool audio_extn_compr_cap_enabled()
+bool compr_cap_enabled()
 {
     char prop_value[PROPERTY_VALUE_MAX] = {0};
     bool tunnel_encode = false;
@@ -81,7 +87,7 @@ bool audio_extn_compr_cap_enabled()
         return false;
 }
 
-bool audio_extn_compr_cap_format_supported(audio_format_t format)
+bool compr_cap_format_supported(audio_format_t format)
 {
     if (format == AUDIO_FORMAT_AMR_WB)
         return true;
@@ -90,7 +96,7 @@ bool audio_extn_compr_cap_format_supported(audio_format_t format)
 }
 
 
-bool audio_extn_compr_cap_usecase_supported(audio_usecase_t usecase)
+bool compr_cap_usecase_supported(audio_usecase_t usecase)
 {
     if ((usecase == USECASE_AUDIO_RECORD_COMPRESS) ||
         (usecase == USECASE_INCALL_REC_UPLINK_COMPRESS) ||
@@ -102,7 +108,7 @@ bool audio_extn_compr_cap_usecase_supported(audio_usecase_t usecase)
 }
 
 
-size_t audio_extn_compr_cap_get_buffer_size(audio_format_t format)
+size_t compr_cap_get_buffer_size(audio_format_t format)
 {
     if (format == AUDIO_FORMAT_AMR_WB)
         /*One AMR WB frame is 61 bytes. Return that to the caller.
@@ -112,7 +118,7 @@ size_t audio_extn_compr_cap_get_buffer_size(audio_format_t format)
         return 0;
 }
 
-size_t audio_extn_compr_cap_read(struct stream_in * in,
+size_t compr_cap_read(struct stream_in * in,
     void *buffer, size_t bytes)
 {
     int ret;

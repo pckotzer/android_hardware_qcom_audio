@@ -1,5 +1,5 @@
 /*--------------------------------------------------------------------------
-Copyright (c) 2010, 2014 The Linux Foundation. All rights reserved.
+Copyright (c) 2010, 2014, 2016-2018, The Linux Foundation. All rights reserved.
 
 Redistribution and use in source and binary forms, with or without
 modification, are permitted provided that the following conditions are met:
@@ -144,20 +144,34 @@ SIDE EFFECTS:
 =============================================================================*/
 void omx_amr_aenc::wait_for_event()
 {
-    int               rc;
+    int               rc = 0;
     struct timespec   ts;
     pthread_mutex_lock(&m_event_lock);
     while (0 == m_is_event_done)
     {
-       clock_gettime(CLOCK_REALTIME, &ts);
+       clock_gettime(CLOCK_MONOTONIC, &ts);
        ts.tv_sec += (SLEEP_MS/1000);
        ts.tv_nsec += ((SLEEP_MS%1000) * 1000000);
+       if (ts.tv_nsec >= 1000000000)
+       {
+          ts.tv_nsec -= 1000000000;
+          ts.tv_sec += 1;
+       }
        rc = pthread_cond_timedwait(&cond, &m_event_lock, &ts);
        if (rc == ETIMEDOUT && !m_is_event_done) {
-            DEBUG_PRINT("Timed out waiting for flush");
-            if (ioctl( m_drv_fd, AUDIO_FLUSH, 0) == -1)
-                DEBUG_PRINT_ERROR("Flush:Input port, ioctl flush failed %d\n",
-                    errno);
+         DEBUG_PRINT("Timed out waiting for flush");
+         rc = ioctl(m_drv_fd, AUDIO_FLUSH, 0);
+         if (rc == -1)
+         {
+           DEBUG_PRINT_ERROR("Flush:Input port, ioctl flush failed: rc:%d, %s, no:%d \n",
+               rc, strerror(errno), errno);
+         }
+         else if (rc < 0)
+         {
+           DEBUG_PRINT_ERROR("Flush:Input port, ioctl failed error: rc:%d, %s, no:%d \n",
+               rc, strerror(errno), errno);
+           break;
+         }
        }
     }
     m_is_event_done = 0;
@@ -272,7 +286,6 @@ omx_amr_aenc::omx_amr_aenc(): m_tmp_meta_buf(NULL),
         m_out_act_buf_count (OMX_CORE_NUM_OUTPUT_BUFFERS),
         m_inp_current_buf_count(0),
         m_out_current_buf_count(0),
-        output_buffer_size((OMX_U32)OMX_AMR_OUTPUT_BUFFER_SIZE),
         input_buffer_size(OMX_CORE_INPUT_BUFFER_SIZE),
         m_session_id(0),
         m_inp_bEnabled(OMX_TRUE),
@@ -287,6 +300,7 @@ omx_amr_aenc::omx_amr_aenc(): m_tmp_meta_buf(NULL),
 {
     int cond_ret = 0;
     component_Role.nSize = 0;
+    pthread_condattr_t attr;
     memset(&m_cmp, 0, sizeof(m_cmp));
     memset(&m_cb, 0, sizeof(m_cb));
     memset(&m_pcm_param, 0, sizeof(m_pcm_param));
@@ -332,7 +346,10 @@ omx_amr_aenc::omx_amr_aenc(): m_tmp_meta_buf(NULL),
 
     pthread_mutexattr_init(&in_buf_count_lock_attr);
     pthread_mutex_init(&in_buf_count_lock, &in_buf_count_lock_attr);
-    if ((cond_ret = pthread_cond_init (&cond, NULL)) != 0)
+
+    pthread_condattr_init(&attr);
+    pthread_condattr_setclock(&attr, CLOCK_MONOTONIC);
+    if ((cond_ret = pthread_cond_init (&cond, &attr)) != 0)
     {
        DEBUG_PRINT_ERROR("pthread_cond_init returns non zero for cond\n");
        if (cond_ret == EAGAIN)
@@ -426,8 +443,6 @@ omx_amr_aenc::~omx_amr_aenc()
 
     pthread_mutexattr_destroy(&m_out_th_attr_1);
     pthread_mutex_destroy(&m_out_th_lock_1);
-    pthread_mutex_destroy(&out_buf_count_lock);
-    pthread_mutex_destroy(&in_buf_count_lock);
     pthread_cond_destroy(&cond);
     pthread_cond_destroy(&in_cond);
     pthread_cond_destroy(&out_cond);
@@ -504,13 +519,13 @@ void omx_amr_aenc::frame_done_cb(OMX_BUFFERHEADERTYPE *bufHdr)
         m_amr_pb_stats.fbd_cnt++;
         pthread_mutex_lock(&out_buf_count_lock);
         nNumOutputBuf--;
-        DEBUG_PRINT("FBD CB:: nNumOutputBuf=%d out_buf_len=%u fbd_cnt=%u\n",\
+        DEBUG_DETAIL("FBD CB:: nNumOutputBuf=%d out_buf_len=%u fbd_cnt=%u\n",\
                     nNumOutputBuf,
                     m_amr_pb_stats.tot_out_buf_len,
                     m_amr_pb_stats.fbd_cnt);
         m_amr_pb_stats.tot_out_buf_len += bufHdr->nFilledLen;
         m_amr_pb_stats.tot_pb_time     = bufHdr->nTimeStamp;
-        DEBUG_PRINT("FBD:in_buf_len=%u out_buf_len=%u\n",
+        DEBUG_DETAIL("FBD:in_buf_len=%u out_buf_len=%u\n",
                     m_amr_pb_stats.tot_in_buf_len,
                     m_amr_pb_stats.tot_out_buf_len);
 
@@ -1093,13 +1108,28 @@ OMX_ERRORTYPE omx_amr_aenc::component_init(OMX_STRING role)
     component_Role.nVersion.nVersion = OMX_SPEC_VERSION;
     if (!strcmp(role,"OMX.qcom.audio.encoder.amrnb"))
     {
+        amrwb_enable = 0;
         pcm_input = 1;
         component_Role.nSize = (OMX_U32)sizeof(role);
         strlcpy((char *)component_Role.cRole, (const char*)role,
 		sizeof(component_Role.cRole));
         DEBUG_PRINT("\ncomponent_init: Component %s LOADED \n", role);
-    } else if (!strcmp(role,"OMX.qcom.audio.encoder.tunneled.amrnb"))
-    {
+    } else if (!strcmp(role,"OMX.qcom.audio.encoder.tunneled.amrnb")) {
+        amrwb_enable = 0;
+        pcm_input = 0;
+        component_Role.nSize = (OMX_U32)sizeof(role);
+        strlcpy((char *)component_Role.cRole, (const char*)role,
+		sizeof(component_Role.cRole));
+        DEBUG_PRINT("\ncomponent_init: Component %s LOADED \n", role);
+    } else if (!strcmp(role,"OMX.qcom.audio.encoder.amrwb")) {
+        amrwb_enable = 1;
+        pcm_input = 1;
+        component_Role.nSize = (OMX_U32)sizeof(role);
+        strlcpy((char *)component_Role.cRole, (const char*)role,
+		sizeof(component_Role.cRole));
+        DEBUG_PRINT("\ncomponent_init: Component %s LOADED \n", role);
+    } else if (!strcmp(role,"OMX.qcom.audio.encoder.tunneled.amrwb")) {
+        amrwb_enable = 1;
         pcm_input = 0;
         component_Role.nSize = (OMX_U32)sizeof(role);
         strlcpy((char *)component_Role.cRole, (const char*)role,
@@ -1112,33 +1142,65 @@ OMX_ERRORTYPE omx_amr_aenc::component_init(OMX_STRING role)
 		sizeof(component_Role.cRole));
         DEBUG_PRINT("\ncomponent_init: Component %s LOADED is invalid\n", role);
     }
-    if(pcm_input)
-    {
-        m_tmp_meta_buf = (OMX_U8*) malloc(sizeof(OMX_U8) *
-                         (OMX_CORE_INPUT_BUFFER_SIZE + sizeof(META_IN)));
 
-        if (m_tmp_meta_buf == NULL){
-            DEBUG_PRINT_ERROR("Mem alloc failed for tmp meta buf\n");
-                return OMX_ErrorInsufficientResources;
-	}
-    }
-    m_tmp_out_meta_buf =
-		(OMX_U8*)malloc(sizeof(OMX_U8)*OMX_AMR_OUTPUT_BUFFER_SIZE);
-        if ( m_tmp_out_meta_buf == NULL ){
-            DEBUG_PRINT_ERROR("Mem alloc failed for out meta buf\n");
-                return OMX_ErrorInsufficientResources;
-            }
-
-    if(0 == pcm_input)
+    if (!amrwb_enable)
     {
-        m_drv_fd = open("/dev/msm_amrnb_in",O_RDONLY);
-    DEBUG_PRINT("Driver in Tunnel mode open\n");
+        output_buffer_size = (OMX_U32)OMX_AMRNB_OUTPUT_BUFFER_SIZE;
     }
     else
     {
-        m_drv_fd = open("/dev/msm_amrnb_in",O_RDWR);
-    DEBUG_PRINT("Driver in Non Tunnel mode open\n");
+        output_buffer_size = (OMX_U32)OMX_AMRWB_OUTPUT_BUFFER_SIZE;
     }
+    if(pcm_input)
+    {
+        m_tmp_meta_buf = (OMX_U8*) malloc(sizeof(OMX_U8) *
+                (OMX_CORE_INPUT_BUFFER_SIZE + sizeof(META_IN)));
+
+        if (m_tmp_meta_buf == NULL){
+            DEBUG_PRINT_ERROR("Mem alloc failed for tmp meta buf\n");
+            return OMX_ErrorInsufficientResources;
+        }
+    }
+
+    if (!amrwb_enable)
+    {
+        m_tmp_out_meta_buf =
+            (OMX_U8*)malloc(sizeof(OMX_U8)*OMX_AMRNB_OUTPUT_BUFFER_SIZE);
+    }
+    else
+    {
+        m_tmp_out_meta_buf =
+            (OMX_U8*)malloc(sizeof(OMX_U8)*OMX_AMRWB_OUTPUT_BUFFER_SIZE);
+    }
+
+    if (m_tmp_out_meta_buf == NULL ){
+        DEBUG_PRINT_ERROR("Mem alloc failed for out meta buf\n");
+        return OMX_ErrorInsufficientResources;
+    }
+
+    if(!amrwb_enable) {
+        if(0 == pcm_input)
+        {
+            m_drv_fd = open("/dev/msm_amrnb_in",O_RDONLY);
+            DEBUG_PRINT("Driver in Tunnel mode open\n");
+        }
+        else
+        {
+            m_drv_fd = open("/dev/msm_amrnb_in",O_RDWR);
+            DEBUG_PRINT("Driver in Non Tunnel mode open\n");
+        }
+    } else {
+        if(0 == pcm_input)
+        {
+            m_drv_fd = open("/dev/msm_amrwb_in",O_RDONLY);
+            DEBUG_PRINT("Driver in Tunnel mode open\n");
+        }
+        else
+        {
+            m_drv_fd = open("/dev/msm_amrwb_in",O_RDWR);
+            DEBUG_PRINT("Driver in Non Tunnel mode open\n");
+        }
+	}
     if (m_drv_fd < 0)
     {
         DEBUG_PRINT_ERROR("Component_init Open Failed[%d] errno[%d]",\
@@ -1408,6 +1470,7 @@ OMX_ERRORTYPE  omx_amr_aenc::send_command_proxy(OMX_IN OMX_HANDLETYPE hComp,
             {
 
                 struct msm_audio_amrnb_enc_config_v2 drv_amr_enc_config;
+                struct msm_audio_amrwb_enc_config drv_amrwb_enc_config;
                 struct msm_audio_stream_config drv_stream_config;
                 struct msm_audio_buf_cfg buf_cfg;
                 struct msm_audio_config pcm_cfg;
@@ -1424,22 +1487,49 @@ OMX_ERRORTYPE  omx_amr_aenc::send_command_proxy(OMX_IN OMX_HANDLETYPE hComp,
                     DEBUG_PRINT_ERROR("ioctl AUDIO_SET_STREAM_CONFIG failed, \
 					errno[%d]\n", errno);
                 }
+                if(!amrwb_enable)
+                {
+                    if(ioctl(m_drv_fd, AUDIO_GET_AMRNB_ENC_CONFIG_V2,
+                                &drv_amr_enc_config) == -1)
+                    {
+                        DEBUG_PRINT_ERROR("ioctl AUDIO_GET_AMRNB_ENC_CONFIG_V2 \
+                                failed, errno[%d]\n", errno);
+                    }
+                } else {
+                    if(ioctl(m_drv_fd, AUDIO_GET_AMRWB_ENC_CONFIG,
+                                &drv_amrwb_enc_config) == -1)
+                    {
+                        DEBUG_PRINT_ERROR("ioctl AUDIO_GET_AMRWB_ENC_CONFIG \
+                                failed, errno[%d]\n", errno);
+                    }
+                }
+                if(!amrwb_enable) {
+                    drv_amr_enc_config.band_mode = m_amr_param.eAMRBandMode;
+                    drv_amr_enc_config.dtx_enable = m_amr_param.eAMRDTXMode;
+                    drv_amr_enc_config.frame_format = m_amr_param.eAMRFrameFormat;
+                } else {
+                    drv_amrwb_enc_config.band_mode = m_amr_param.eAMRBandMode;
+                    drv_amrwb_enc_config.dtx_enable = m_amr_param.eAMRDTXMode;
+                    drv_amrwb_enc_config.frame_format = m_amr_param.eAMRFrameFormat;
+                }
 
-                if(ioctl(m_drv_fd, AUDIO_GET_AMRNB_ENC_CONFIG_V2,
-			&drv_amr_enc_config) == -1)
+                if(!amrwb_enable)
                 {
-                    DEBUG_PRINT_ERROR("ioctl AUDIO_GET_AMRNB_ENC_CONFIG_V2 \
-					failed, errno[%d]\n", errno);
+                    if(ioctl(m_drv_fd, AUDIO_SET_AMRNB_ENC_CONFIG_V2, &drv_amr_enc_config)
+                            == -1)
+                    {
+                        DEBUG_PRINT_ERROR("ioctl AUDIO_SET_AMRNB_ENC_CONFIG_V2 \
+                                failed, errno[%d]\n", errno);
+                    }
+                } else {
+                    if(ioctl(m_drv_fd, AUDIO_SET_AMRWB_ENC_CONFIG, &drv_amrwb_enc_config)
+                            == -1)
+                    {
+                        DEBUG_PRINT_ERROR("ioctl AUDIO_SET_AMRWB_ENC_CONFIG \
+                                failed, errno[%d]\n", errno);
+                    }
                 }
-        drv_amr_enc_config.band_mode = m_amr_param.eAMRBandMode;
-        drv_amr_enc_config.dtx_enable = m_amr_param.eAMRDTXMode;
-        drv_amr_enc_config.frame_format = m_amr_param.eAMRFrameFormat;
-        if(ioctl(m_drv_fd, AUDIO_SET_AMRNB_ENC_CONFIG_V2, &drv_amr_enc_config)
-		== -1)
-                {
-                    DEBUG_PRINT_ERROR("ioctl AUDIO_SET_AMRNB_ENC_CONFIG_V2 \
-					failed, errno[%d]\n", errno);
-                }
+
                 if (ioctl(m_drv_fd, AUDIO_GET_BUF_CFG, &buf_cfg) == -1)
                 {
                     DEBUG_PRINT_ERROR("ioctl AUDIO_GET_BUF_CFG, errno[%d]\n",
@@ -1532,9 +1622,9 @@ OMX_ERRORTYPE  omx_amr_aenc::send_command_proxy(OMX_IN OMX_HANDLETYPE hComp,
             {
                 DEBUG_PRINT("SCP-->Executing to Idle \n");
                 if(pcm_input)
-                    execute_omx_flush(-1,false);
+                    execute_omx_flush(-1);
                 else
-                    execute_omx_flush(1,false);
+                    execute_omx_flush(1);
 
 
             } else if (OMX_StatePause == eState)
@@ -1608,9 +1698,9 @@ OMX_ERRORTYPE  omx_amr_aenc::send_command_proxy(OMX_IN OMX_HANDLETYPE hComp,
                 m_flush_cnt = 2;
                 pthread_mutex_unlock(&m_flush_lock);
                 if(pcm_input)
-                    execute_omx_flush(-1,false);
+                    execute_omx_flush(-1);
                 else
-                    execute_omx_flush(1,false);
+                    execute_omx_flush(1);
 
             } else if ( eState == OMX_StateLoaded )
             {
@@ -1730,7 +1820,7 @@ OMX_ERRORTYPE  omx_amr_aenc::send_command_proxy(OMX_IN OMX_HANDLETYPE hComp,
              param1 == OMX_CORE_OUTPUT_PORT_INDEX ||
             (signed)param1 == -1 )
         {
-            execute_omx_flush(param1);
+            execute_omx_flush(param1,true);
         } else
         {
             eRet = OMX_ErrorBadPortIndex;
@@ -3150,7 +3240,7 @@ OMX_ERRORTYPE  omx_amr_aenc::get_state(OMX_IN OMX_HANDLETYPE  hComp,
         return OMX_ErrorBadParameter;
     }
     *state = m_state;
-    DEBUG_PRINT("Returning the state %d\n",*state);
+    DEBUG_DETAIL("Returning the state %d\n",*state);
     return OMX_ErrorNone;
 }
 
@@ -3552,7 +3642,6 @@ OMX_ERRORTYPE  omx_amr_aenc::use_input_buffer
     OMX_ERRORTYPE         eRet = OMX_ErrorNone;
     OMX_BUFFERHEADERTYPE  *bufHdr;
     unsigned              nBufSize = MAX(bytes, input_buffer_size);
-    char                  *buf_ptr;
 
     if(hComp == NULL)
     {
@@ -3568,11 +3657,10 @@ OMX_ERRORTYPE  omx_amr_aenc::use_input_buffer
     }
     if (m_inp_current_buf_count < m_inp_act_buf_count)
     {
-        buf_ptr = (char *) calloc(sizeof(OMX_BUFFERHEADERTYPE), 1);
+        bufHdr = (OMX_BUFFERHEADERTYPE *) calloc(sizeof(OMX_BUFFERHEADERTYPE), 1);
 
-        if (buf_ptr != NULL)
+        if (bufHdr != NULL)
         {
-            bufHdr = (OMX_BUFFERHEADERTYPE *) buf_ptr;
             *bufferHdr = bufHdr;
             memset(bufHdr,0,sizeof(OMX_BUFFERHEADERTYPE));
 
@@ -3637,7 +3725,6 @@ OMX_ERRORTYPE  omx_amr_aenc::use_output_buffer
     OMX_ERRORTYPE         eRet = OMX_ErrorNone;
     OMX_BUFFERHEADERTYPE  *bufHdr;
     unsigned              nBufSize = MAX(bytes,output_buffer_size);
-    char                  *buf_ptr;
 
     if(hComp == NULL)
     {
@@ -3656,11 +3743,10 @@ OMX_ERRORTYPE  omx_amr_aenc::use_output_buffer
     if (m_out_current_buf_count < m_out_act_buf_count)
     {
 
-        buf_ptr = (char *) calloc(sizeof(OMX_BUFFERHEADERTYPE), 1);
+        bufHdr = (OMX_BUFFERHEADERTYPE *) calloc(sizeof(OMX_BUFFERHEADERTYPE), 1);
 
-        if (buf_ptr != NULL)
+        if (bufHdr != NULL)
         {
-            bufHdr = (OMX_BUFFERHEADERTYPE *) buf_ptr;
             DEBUG_PRINT("BufHdr=%p buffer=%p\n",bufHdr,buffer);
             *bufferHdr = bufHdr;
             memset(bufHdr,0,sizeof(OMX_BUFFERHEADERTYPE));
@@ -3896,12 +3982,12 @@ OMX_ERRORTYPE  omx_amr_aenc::free_buffer(OMX_IN OMX_HANDLETYPE         hComp,
  @return error status
  */
 OMX_ERRORTYPE  omx_amr_aenc::empty_this_buffer(
-				OMX_IN OMX_HANDLETYPE         hComp,
-				OMX_IN OMX_BUFFERHEADERTYPE* buffer)
+                                OMX_IN OMX_HANDLETYPE         hComp,
+                                OMX_IN OMX_BUFFERHEADERTYPE* buffer)
 {
     OMX_ERRORTYPE eRet = OMX_ErrorNone;
 
-    DEBUG_PRINT("ETB:Buf:%p Len %u TS %lld numInBuf=%d\n", \
+    DEBUG_DETAIL("ETB:Buf:%p Len %u TS %lld numInBuf=%d\n", \
                 buffer, buffer->nFilledLen, buffer->nTimeStamp, (nNumInputBuf));
     if (m_state == OMX_StateInvalid)
     {
@@ -3997,7 +4083,10 @@ OMX_ERRORTYPE  omx_amr_aenc::empty_this_buffer_proxy
             meta_in.nFlags  |= OMX_BUFFERFLAG_EOS;
         }
         memcpy(data,&meta_in, meta_in.offsetVal);
-        DEBUG_PRINT("meta_in.nFlags = %d\n",meta_in.nFlags);
+        DEBUG_DETAIL("meta_in.nFlags = %d\n",meta_in.nFlags);
+    } else {
+        DEBUG_PRINT_ERROR("temp meta is null buf\n");
+            return OMX_ErrorInsufficientResources;
     }
 
     memcpy(&data[sizeof(META_IN)],buffer->pBuffer,buffer->nFilledLen);
@@ -4037,7 +4126,7 @@ OMX_ERRORTYPE  omx_amr_aenc::fill_this_buffer_proxy
 
     if (true == search_output_bufhdr(buffer))
     {
-          DEBUG_PRINT("\nBefore Read..m_drv_fd = %d,\n",m_drv_fd);
+          DEBUG_DETAIL("\nBefore Read..m_drv_fd = %d,\n",m_drv_fd);
           nReadbytes = read(m_drv_fd,buffer->pBuffer,output_buffer_size );
           DEBUG_DETAIL("FTBP->Al_len[%lu]buf[%p]size[%d]numOutBuf[%d]\n",\
                          buffer->nAllocLen,buffer->pBuffer,
@@ -4049,7 +4138,7 @@ OMX_ERRORTYPE  omx_amr_aenc::fill_this_buffer_proxy
              frame_done_cb((OMX_BUFFERHEADERTYPE *)buffer);
                   return OMX_ErrorNone;
       } else
-              DEBUG_PRINT("Read bytes %d\n",nReadbytes);
+              DEBUG_DETAIL("Read bytes %d\n",nReadbytes);
       // Buffer from Driver will have
       // 1 byte => Nr of frame field
       // (sizeof(ENC_META_OUT) * Nr of frame) bytes => meta_out->offset_to_frame
@@ -4057,7 +4146,7 @@ OMX_ERRORTYPE  omx_amr_aenc::fill_this_buffer_proxy
 
           meta_out = (ENC_META_OUT *)(buffer->pBuffer + sizeof(unsigned char));
           buffer->nTimeStamp = (((OMX_TICKS)meta_out->msw_ts << 32)+
-					meta_out->lsw_ts);
+                                        meta_out->lsw_ts);
           buffer->nFlags |= meta_out->nflags;
           buffer->nOffset = (OMX_U32)(meta_out->offset_to_frame +
                                     sizeof(unsigned char));
@@ -4065,9 +4154,9 @@ OMX_ERRORTYPE  omx_amr_aenc::fill_this_buffer_proxy
           ts += FRAMEDURATION;
           buffer->nTimeStamp = ts;
           nTimestamp = buffer->nTimeStamp;
-          DEBUG_PRINT("nflags %d frame_size %d offset_to_frame %d \
-		timestamp %lld\n", meta_out->nflags, meta_out->frame_size,
-		meta_out->offset_to_frame, buffer->nTimeStamp);
+          DEBUG_DETAIL("nflags %d frame_size %d offset_to_frame %d \
+                timestamp %lld\n", meta_out->nflags, meta_out->frame_size,
+                meta_out->offset_to_frame, buffer->nTimeStamp);
 
           if ((buffer->nFlags & OMX_BUFFERFLAG_EOS) == OMX_BUFFERFLAG_EOS )
           {
@@ -4086,7 +4175,7 @@ OMX_ERRORTYPE  omx_amr_aenc::fill_this_buffer_proxy
 
               return OMX_ErrorNone;
           }
-          DEBUG_PRINT("nState %d \n",nState );
+          DEBUG_DETAIL("nState %d \n",nState );
 
           pthread_mutex_lock(&m_state_lock);
           get_state(&m_cmp, &state);
@@ -4261,9 +4350,9 @@ void  omx_amr_aenc::deinit_encoder()
                                                                 m_state);
         // Get back any buffers from driver
         if(pcm_input)
-            execute_omx_flush(-1,false);
+            execute_omx_flush(-1);
         else
-            execute_omx_flush(1,false);
+            execute_omx_flush(1);
         // force state change to loaded so that all threads can be exited
         pthread_mutex_lock(&m_state_lock);
         m_state = OMX_StateLoaded;
@@ -4506,7 +4595,7 @@ RETURN VALUE
 ========================================================================== */
 bool omx_amr_aenc::release_done(OMX_U32 param1)
 {
-    DEBUG_PRINT("Inside omx_amr_aenc::release_done");
+    DEBUG_DETAIL("Inside omx_amr_aenc::release_done");
     OMX_BOOL bRet = OMX_FALSE;
 
     if (param1 == OMX_ALL)

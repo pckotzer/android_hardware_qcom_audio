@@ -33,6 +33,12 @@
 #include "platform.h"
 #include "platform_api.h"
 
+#ifdef DYNAMIC_LOG_ENABLED
+#include <log_xml_parser.h>
+#define LOG_MASK HAL_MOD_FILE_DTS_EAGLE
+#include <log_utils.h>
+#endif
+
 #ifdef DTS_EAGLE
 
 #define AUDIO_PARAMETER_KEY_DTS_EAGLE   "DTS_EAGLE"
@@ -106,7 +112,7 @@ static int do_DTS_Eagle_params(const struct audio_device *adev, struct dts_eagle
         list_for_each(node, &adev->usecase_list) {
             usecase = node_to_item(node, struct audio_usecase, list);
             /* set/get eagle params for offload usecases only */
-            if ((usecase->type == PCM_PLAYBACK) && is_offload_usecase(usecase->id)) {
+            if (usecase->stream.out && (usecase->type == PCM_PLAYBACK) && is_offload_usecase(usecase->id)) {
                 tret = do_DTS_Eagle_params_stream(usecase->stream.out, t, get);
                 if (tret < 0)
                     ret = tret;
@@ -188,6 +194,28 @@ int audio_extn_dts_eagle_fade(const struct audio_device *adev, bool fade_in, con
             return do_DTS_Eagle_params(adev, fade_out_data, false, out);
     }
     return 0;
+}
+
+void audio_extn_dts_eagle_send_lic() {
+    char prop[PROPERTY_VALUE_MAX] = {0};
+    bool enabled;
+    property_get("vendor.audio.use.dts_eagle", prop, "0");
+    enabled = !strncmp("true", prop, sizeof("true")) || atoi(prop);
+    if (!enabled)
+        return;
+    int fd = open(DEVICE_NODE, O_RDWR);
+    int index = 1;
+    if (fd >= 0) {
+        if (ioctl(fd, DTS_EAGLE_IOCTL_SEND_LICENSE, &index) < 0) {
+            ALOGE("DTS_EAGLE_HAL: error sending license after adsp ssr");
+        } else {
+            ALOGD("DTS_EAGLE_HAL: sent license after adsp ssr");
+        }
+        close(fd);
+    } else {
+        ALOGE("DTS_EAGLE_HAL: error opening eagle");
+    }
+    return;
 }
 
 void audio_extn_dts_eagle_set_parameters(struct audio_device *adev, struct str_parms *parms) {

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2013-2015, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2013-2015, 2018, The Linux Foundation. All rights reserved.
  * Not a Contribution.
  *
  * Copyright (C) 2013 The Android Open Source Project
@@ -20,6 +20,8 @@
 #ifndef OFFLOAD_VIRTUALIZER_H_
 #define OFFLOAD_VIRTUALIZER_H_
 
+#define VIRTUALIZER_PARAM_LATENCY 0x80000000
+
 #include "bundle.h"
 
 extern const effect_descriptor_t virtualizer_descriptor;
@@ -32,6 +34,7 @@ typedef struct virtualizer_context_s {
     // Offload vars
     struct mixer_ctl *ctl;
     int hw_acc_fd;
+    bool enabled_by_client;
     bool temp_disabled;
     audio_devices_t forced_device;
     audio_devices_t device;

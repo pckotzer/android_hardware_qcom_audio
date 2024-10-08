@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2013 - 2014, 2017, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2013-2014, 2017-2019, The Linux Foundation. All rights reserved.
  * Not a Contribution.
  *
  * Copyright (C) 2013 The Android Open Source Project
@@ -29,6 +29,20 @@
 
 #include "effect_api.h"
 #include "reverb.h"
+
+#define REVERB_MAX_LATENCY 100
+
+#ifdef AUDIO_FEATURE_ENABLED_GCOV
+extern void  __gcov_flush();
+static void enable_gcov()
+{
+    __gcov_flush();
+}
+#else
+static void enable_gcov()
+{
+}
+#endif
 
 /* Offload auxiliary environmental reverb UUID: 79a18026-18fd-4185-8233-0002a5d5c51b */
 const effect_descriptor_t aux_env_reverb_descriptor = {
@@ -238,6 +252,7 @@ uint32_t reverb_get_reverb_delay(reverb_context_t *context)
                           context->reverb_settings.reverbDelay);
     return context->reverb_settings.reverbDelay;
 }
+
 void reverb_set_reverb_delay(reverb_context_t *context, uint32_t delay)
 {
     ALOGV("%s: ctxt %p, reverb delay: %d", __func__, context, delay);
@@ -252,12 +267,14 @@ void reverb_set_reverb_delay(reverb_context_t *context, uint32_t delay)
                                   OFFLOAD_SEND_REVERB_ENABLE_FLAG |
                                   OFFLOAD_SEND_REVERB_DELAY);
 }
+
 int16_t reverb_get_reflections_level(reverb_context_t *context)
 {
     ALOGV("%s: ctxt %p, reflection level: %d", __func__, context,
                           context->reverb_settings.reflectionsLevel);
     return context->reverb_settings.reflectionsLevel;
 }
+
 void reverb_set_reflections_level(reverb_context_t *context, int16_t level)
 {
     ALOGV("%s: ctxt %p, reflection level: %d", __func__, context, level);
@@ -272,12 +289,14 @@ void reverb_set_reflections_level(reverb_context_t *context, int16_t level)
                                   OFFLOAD_SEND_REVERB_ENABLE_FLAG |
                                   OFFLOAD_SEND_REVERB_REFLECTIONS_LEVEL);
 }
+
 uint32_t reverb_get_reflections_delay(reverb_context_t *context)
 {
     ALOGV("%s: ctxt %p, reflection delay: %d", __func__, context,
                           context->reverb_settings.reflectionsDelay);
     return context->reverb_settings.reflectionsDelay;
 }
+
 void reverb_set_reflections_delay(reverb_context_t *context, uint32_t delay)
 {
     ALOGV("%s: ctxt %p, reflection delay: %d", __func__, context, delay);
@@ -416,6 +435,9 @@ void reverb_set_all_properties(reverb_context_t *context,
                                   OFFLOAD_SEND_REVERB_DECAY_TIME |
                                   OFFLOAD_SEND_REVERB_DECAY_HF_RATIO |
                                   OFFLOAD_SEND_REVERB_LEVEL |
+                                  OFFLOAD_SEND_REVERB_DELAY |
+                                  OFFLOAD_SEND_REVERB_REFLECTIONS_LEVEL |
+                                  OFFLOAD_SEND_REVERB_REFLECTIONS_DELAY |
                                   OFFLOAD_SEND_REVERB_DIFFUSION |
                                   OFFLOAD_SEND_REVERB_DENSITY);
 }
@@ -445,7 +467,6 @@ int reverb_get_parameter(effect_context_t *context, effect_param_t *p,
     int32_t param = *param_tmp++;
     void *value = p->data + voffset;
     reverb_settings_t *reverb_settings;
-    int i;
 
     ALOGV("%s: ctxt %p, param %d", __func__, reverb_ctxt, param);
 
@@ -514,6 +535,11 @@ int reverb_get_parameter(effect_context_t *context, effect_param_t *p,
            p->status = -EINVAL;
         p->vsize = sizeof(reverb_settings_t);
         break;
+    case REVERB_PARAM_LATENCY:
+        if (p->vsize < sizeof(uint32_t))
+            return -EINVAL;
+        p->vsize = sizeof(uint32_t);
+        break;
     default:
         p->status = -EINVAL;
     }
@@ -566,6 +592,9 @@ int reverb_get_parameter(effect_context_t *context, effect_param_t *p,
         reverb_settings->reflectionsDelay = reverb_get_reflections_delay(reverb_ctxt);
         reverb_settings->diffusion = reverb_get_diffusion(reverb_ctxt);
         reverb_settings->density = reverb_get_density(reverb_ctxt);
+        break;
+    case REVERB_PARAM_LATENCY:
+        *(uint16_t *)value = REVERB_MAX_LATENCY;
         break;
     default:
         p->status = -EINVAL;
@@ -667,10 +696,8 @@ int reverb_set_device(effect_context_t *context, uint32_t device)
     return 0;
 }
 
-int reverb_reset(effect_context_t *context)
+int reverb_reset(effect_context_t *context __unused)
 {
-    reverb_context_t *reverb_ctxt = (reverb_context_t *)context;
-
     return 0;
 }
 
@@ -710,7 +737,7 @@ int reverb_init(effect_context_t *context)
     if (reverb_ctxt->preset &&
         reverb_ctxt->next_preset != reverb_ctxt->cur_preset)
         reverb_load_preset(reverb_ctxt);
-
+    enable_gcov();
     return 0;
 }
 
@@ -732,6 +759,7 @@ int reverb_enable(effect_context_t *context)
 
     if (!offload_reverb_get_enable_flag(&(reverb_ctxt->offload_reverb)))
         offload_reverb_set_enable_flag(&(reverb_ctxt->offload_reverb), true);
+    enable_gcov();
     return 0;
 }
 
@@ -752,6 +780,7 @@ int reverb_disable(effect_context_t *context)
                                       &reverb_ctxt->offload_reverb,
                                       OFFLOAD_SEND_REVERB_ENABLE_FLAG);
     }
+    enable_gcov();
     return 0;
 }
 
@@ -774,7 +803,7 @@ int reverb_start(effect_context_t *context, output_context_t *output)
                                       OFFLOAD_SEND_REVERB_PRESET);
         }
     }
-
+    enable_gcov();
     return 0;
 }
 
@@ -791,6 +820,7 @@ int reverb_stop(effect_context_t *context, output_context_t *output __unused)
                                    OFFLOAD_SEND_REVERB_ENABLE_FLAG);
     }
     reverb_ctxt->ctl = NULL;
+    enable_gcov();
     return 0;
 }
 

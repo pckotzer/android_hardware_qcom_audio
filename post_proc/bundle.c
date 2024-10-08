@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2013-2017, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2013-2017, 2019, The Linux Foundation. All rights reserved.
  * Not a Contribution.
  *
  * Copyright (C) 2013 The Android Open Source Project
@@ -38,12 +38,15 @@
 #define LOG_TAG "offload_effect_bundle"
 //#define LOG_NDEBUG 0
 
-#include <cutils/list.h>
-#include <log/log.h>
 #include <stdlib.h>
+#include <cutils/list.h>
+#include <cutils/str_parms.h>
+#include <log/log.h>
 #include <system/thread_defs.h>
 #include <tinyalsa/asoundlib.h>
 #include <hardware/audio_effect.h>
+#include <pthread.h>
+#include <unistd.h>
 
 #include "bundle.h"
 #include "hw_accelerator.h"
@@ -244,6 +247,7 @@ int offload_effects_bundle_hal_start_output(audio_io_handle_t output, int pcm_id
     /* populate the mixer control to send offload parameters */
     snprintf(mixer_string, sizeof(mixer_string),
              "%s %d", "Audio Effects Config", out_ctxt->pcm_device_id);
+
     if (!mixer) {
         ALOGE("Invalid mixer");
         out_ctxt->ctl = NULL;
@@ -286,7 +290,6 @@ __attribute__ ((visibility ("default")))
 int offload_effects_bundle_hal_stop_output(audio_io_handle_t output, int pcm_id)
 {
     int ret = -1;
-    struct listnode *node;
     struct listnode *fx_node;
     output_context_t *out_ctxt;
 
@@ -446,9 +449,22 @@ int offload_effects_bundle_set_hpx_state(bool hpx_state)
         }
     }
 
-exit:
     pthread_mutex_unlock(&lock);
     return ret;
+}
+
+/*
+ * Effect Bundle Set and get param operations.
+ */
+__attribute__ ((visibility ("default")))
+void offload_effects_bundle_get_parameters(struct str_parms *query __unused,
+                                           struct str_parms *reply __unused)
+{
+}
+
+__attribute__ ((visibility ("default")))
+void offload_effects_bundle_set_parameters(struct str_parms *parms __unused)
+{
 }
 
 /*
@@ -519,25 +535,26 @@ int effect_lib_create(const effect_uuid_t *uuid,
         eq_ctxt->ctl = NULL;
     } else if (memcmp(uuid, &bassboost_descriptor.uuid,
                sizeof(effect_uuid_t)) == 0) {
-        bassboost_context_t *bass_ctxt = (bassboost_context_t *)
-                                         calloc(1, sizeof(bassboost_context_t));
+        bass_context_t *bass_ctxt = (bass_context_t *)
+                                         calloc(1, sizeof(bass_context_t));
         if (bass_ctxt == NULL) {
             return -ENOMEM;
         }
         context = (effect_context_t *)bass_ctxt;
-        context->ops.init = bassboost_init;
-        context->ops.reset = bassboost_reset;
-        context->ops.set_parameter = bassboost_set_parameter;
-        context->ops.get_parameter = bassboost_get_parameter;
-        context->ops.set_device = bassboost_set_device;
-        context->ops.set_hw_acc_mode = bassboost_set_mode;
-        context->ops.enable = bassboost_enable;
-        context->ops.disable = bassboost_disable;
-        context->ops.start = bassboost_start;
-        context->ops.stop = bassboost_stop;
+        context->ops.init = bass_init;
+        context->ops.reset = bass_reset;
+        context->ops.set_parameter = bass_set_parameter;
+        context->ops.get_parameter = bass_get_parameter;
+        context->ops.set_device = bass_set_device;
+        context->ops.set_hw_acc_mode = bass_set_mode;
+        context->ops.enable = bass_enable;
+        context->ops.disable = bass_disable;
+        context->ops.start = bass_start;
+        context->ops.stop = bass_stop;
 
         context->desc = &bassboost_descriptor;
-        bass_ctxt->ctl = NULL;
+        bass_ctxt->bassboost_ctxt.ctl = NULL;
+        bass_ctxt->pbe_ctxt.ctl = NULL;
     } else if (memcmp(uuid, &virtualizer_descriptor.uuid,
                sizeof(effect_uuid_t)) == 0) {
         virtualizer_context_t *virt_ctxt = (virtualizer_context_t *)
@@ -745,7 +762,6 @@ int effect_command(effect_handle_t self, uint32_t cmdCode, uint32_t cmdSize,
 {
 
     effect_context_t * context = (effect_context_t *)self;
-    int retsize;
     int status = 0;
 
     pthread_mutex_lock(&lock);
@@ -921,7 +937,6 @@ int effect_command(effect_handle_t self, uint32_t cmdCode, uint32_t cmdSize,
             add_effect_to_output(out_ctxt, context);
 
         } break;
-
 #ifdef HW_ACCELERATED_EFFECTS
     case EFFECT_CMD_HW_ACC: {
         ALOGV("EFFECT_CMD_HW_ACC cmdSize %d pCmdData %p, *replySize %d, pReplyData %p",

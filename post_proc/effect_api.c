@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2013-2014, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2013-2015, 2019 The Linux Foundation. All rights reserved.
 
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions are
@@ -55,14 +55,15 @@
 #endif
 
 #include <stdbool.h>
-#include <stdlib.h>
-#include <log/log.h>
 #include <errno.h>
+#include <log/log.h>
 #include <tinyalsa/asoundlib.h>
 #include <sound/audio_effects.h>
 #include <sound/devdep_params.h>
 #include <linux/msm_audio.h>
-
+#include <errno.h>
+#include <unistd.h>
+#include <stdio.h>
 #include "effect_api.h"
 
 #ifdef DTS_EAGLE
@@ -178,8 +179,8 @@ static int bassboost_send_params(eff_mode_t mode, void *ctl,
                                   struct bass_boost_params *bassboost,
                                  unsigned param_send_flags)
 {
-    int param_values[128] = {0};
-    int *p_param_values = param_values;
+    long param_values[128] = {0};
+    long *p_param_values = param_values;
 
     ALOGV("%s: flags 0x%x", __func__, param_send_flags);
     *p_param_values++ = BASS_BOOST_MODULE;
@@ -237,6 +238,120 @@ int hw_acc_bassboost_send_params(int fd, struct bass_boost_params *bassboost,
                                  bassboost, param_send_flags);
 }
 
+void offload_pbe_set_device(struct pbe_params *pbe,
+                            uint32_t device)
+{
+    ALOGV("%s: device=%d", __func__, device);
+    pbe->device = device;
+}
+
+void offload_pbe_set_enable_flag(struct pbe_params *pbe,
+                                 bool enable)
+{
+    ALOGV("%s: enable=%d", __func__, enable);
+    pbe->enable_flag = enable;
+}
+
+int offload_pbe_get_enable_flag(struct pbe_params *pbe)
+{
+    ALOGV("%s: enabled=%d", __func__, pbe->enable_flag);
+    return pbe->enable_flag;
+}
+
+static int pbe_send_params(eff_mode_t mode, void *ctl,
+                            struct pbe_params *pbe,
+                            unsigned param_send_flags)
+{
+    long  param_values[128] = {0};
+    long *p_param_values = param_values;
+    int i;
+    int32_t *p_coeffs = NULL;
+    uint32_t lpf_len = 0, hpf_len = 0, bpf_len = 0;
+    uint32_t bsf_len = 0, tsf_len = 0, total_coeffs_len = 0;
+
+    ALOGV("%s: enabled=%d", __func__, pbe->enable_flag);
+    *p_param_values++ = PBE_MODULE;
+    *p_param_values++ = pbe->device;
+    *p_param_values++ = 0; /* num of commands*/
+    if (param_send_flags & OFFLOAD_SEND_PBE_ENABLE_FLAG) {
+        *p_param_values++ = PBE_ENABLE;
+        *p_param_values++ = CONFIG_SET;
+        *p_param_values++ = 0; /* start offset if param size if greater than 128  */
+        *p_param_values++ = PBE_ENABLE_PARAM_LEN;
+        *p_param_values++ = pbe->enable_flag;
+        param_values[2] += 1;
+    }
+    if (param_send_flags & OFFLOAD_SEND_PBE_CONFIG) {
+        *p_param_values++ = PBE_CONFIG;
+        *p_param_values++ = CONFIG_SET;
+        *p_param_values++ = 0; /* start offset if param size if greater than 128  */
+        *p_param_values++ = pbe->cfg_len;
+        *p_param_values++ = pbe->config.real_bass_mix;
+        *p_param_values++ = pbe->config.bass_color_control;
+        *p_param_values++ = pbe->config.main_chain_delay;
+        *p_param_values++ = pbe->config.xover_filter_order;
+        *p_param_values++ = pbe->config.bandpass_filter_order;
+        *p_param_values++ = pbe->config.drc_delay;
+        *p_param_values++ = pbe->config.rms_tav;
+        *p_param_values++ = pbe->config.exp_threshold;
+        *p_param_values++ = pbe->config.exp_slope;
+        *p_param_values++ = pbe->config.comp_threshold;
+        *p_param_values++ = pbe->config.comp_slope;
+        *p_param_values++ = pbe->config.makeup_gain;
+        *p_param_values++ = pbe->config.comp_attack;
+        *p_param_values++ = pbe->config.comp_release;
+        *p_param_values++ = pbe->config.exp_attack;
+        *p_param_values++ = pbe->config.exp_release;
+        *p_param_values++ = pbe->config.limiter_bass_threshold;
+        *p_param_values++ = pbe->config.limiter_high_threshold;
+        *p_param_values++ = pbe->config.limiter_bass_makeup_gain;
+        *p_param_values++ = pbe->config.limiter_high_makeup_gain;
+        *p_param_values++ = pbe->config.limiter_bass_gc;
+        *p_param_values++ = pbe->config.limiter_high_gc;
+        *p_param_values++ = pbe->config.limiter_delay;
+        *p_param_values++ = pbe->config.reserved;
+
+        p_coeffs = &pbe->config.p1LowPassCoeffs[0];
+        lpf_len = (pbe->config.xover_filter_order == 3) ? 10 : 5;
+        hpf_len = (pbe->config.xover_filter_order == 3) ? 10 : 5;
+        bpf_len = pbe->config.bandpass_filter_order * 5;
+        bsf_len = 5;
+        tsf_len = 5;
+        total_coeffs_len = lpf_len + hpf_len + bpf_len + bsf_len + tsf_len;
+
+        for (i = 0; i < total_coeffs_len; i++) {
+            *p_param_values++ = *p_coeffs++;
+        }
+        param_values[2] += 1;
+    }
+
+    if ((mode == OFFLOAD) && param_values[2] && ctl) {
+        mixer_ctl_set_array((struct mixer_ctl *)ctl, param_values,
+                            ARRAY_SIZE(param_values));
+    } else if ((mode == HW_ACCELERATOR) && param_values[2] &&
+               ctl && *(int *)ctl) {
+        if (ioctl(*(int *)ctl, AUDIO_EFFECTS_SET_PP_PARAMS, param_values) < 0)
+            ALOGE("%s: sending h/w acc effects params fail[%d]", __func__, errno);
+    }
+
+    return 0;
+}
+
+int offload_pbe_send_params(struct mixer_ctl *ctl,
+                                  struct pbe_params *pbe,
+                                  unsigned param_send_flags)
+{
+    return pbe_send_params(OFFLOAD, (void *)ctl, pbe,
+                                 param_send_flags);
+}
+
+int hw_acc_pbe_send_params(int fd, struct pbe_params *pbe,
+                                 unsigned param_send_flags)
+{
+    return pbe_send_params(HW_ACCELERATOR, (void *)&fd,
+                                 pbe, param_send_flags);
+}
+
 void offload_virtualizer_set_device(struct virtualizer_params *virtualizer,
                                     uint32_t device)
 {
@@ -290,8 +405,8 @@ static int virtualizer_send_params(eff_mode_t mode, void *ctl,
                                     struct virtualizer_params *virtualizer,
                                    unsigned param_send_flags)
 {
-    int param_values[128] = {0};
-    int *p_param_values = param_values;
+    long param_values[128] = {0};
+    long *p_param_values = param_values;
 
     ALOGV("%s: flags 0x%x", __func__, param_send_flags);
     *p_param_values++ = VIRTUALIZER_MODULE;
@@ -410,8 +525,8 @@ void offload_eq_set_bands_level(struct eq_params *eq, int num_bands,
 static int eq_send_params(eff_mode_t mode, void *ctl, struct eq_params *eq,
                           unsigned param_send_flags)
 {
-    int param_values[128] = {0};
-    int *p_param_values = param_values;
+    long param_values[128] = {0};
+    long *p_param_values = param_values;
     uint32_t i;
 
     ALOGV("%s: flags 0x%x", __func__, param_send_flags);
@@ -454,7 +569,7 @@ static int eq_send_params(eff_mode_t mode, void *ctl, struct eq_params *eq,
         for (i=0; i<eq->config.num_bands; i++) {
             *p_param_values++ = eq->per_band_cfg[i].band_idx;
             *p_param_values++ = eq->per_band_cfg[i].filter_type;
-	    *p_param_values++ = eq->per_band_cfg[i].freq_millihertz;
+            *p_param_values++ = eq->per_band_cfg[i].freq_millihertz;
             *p_param_values++ = eq->per_band_cfg[i].gain_millibels;
             *p_param_values++ = eq->per_band_cfg[i].quality_factor;
         }
@@ -599,8 +714,8 @@ static int reverb_send_params(eff_mode_t mode, void *ctl,
                                struct reverb_params *reverb,
                               unsigned param_send_flags)
 {
-    int param_values[128] = {0};
-    int *p_param_values = param_values;
+    long param_values[128] = {0};
+    long *p_param_values = param_values;
 
     ALOGV("%s: flags 0x%x", __func__, param_send_flags);
     *p_param_values++ = REVERB_MODULE;
@@ -779,9 +894,8 @@ int offload_soft_volume_send_params(struct mixer_ctl *ctl,
                                     struct soft_volume_params vol,
                                     unsigned param_send_flags)
 {
-    int param_values[128] = {0};
-    int *p_param_values = param_values;
-    uint32_t i;
+    long param_values[128] = {0};
+    long *p_param_values = param_values;
 
     ALOGV("%s", __func__);
     *p_param_values++ = SOFT_VOLUME_MODULE;
@@ -845,9 +959,8 @@ int offload_transition_soft_volume_send_params(struct mixer_ctl *ctl,
                                                struct soft_volume_params vol,
                                                unsigned param_send_flags)
 {
-    int param_values[128] = {0};
-    int *p_param_values = param_values;
-    uint32_t i;
+    long param_values[128] = {0};
+    long *p_param_values = param_values;
 
     ALOGV("%s", __func__);
     *p_param_values++ = SOFT_VOLUME2_MODULE;
@@ -888,11 +1001,15 @@ int offload_transition_soft_volume_send_params(struct mixer_ctl *ctl,
 static int hpx_send_params(eff_mode_t mode, void *ctl,
                            unsigned param_send_flags)
 {
-    int param_values[128] = {0};
-    int *p_param_values = param_values;
-    uint32_t i;
+    long param_values[128] = {0};
+    long *p_param_values = param_values;
 
     ALOGV("%s", __func__);
+    if (!ctl) {
+        ALOGE("%s: ctl is NULL, return invalid", __func__);
+        return -EINVAL;
+    }
+
     if (param_send_flags & OFFLOAD_SEND_HPX_STATE_OFF) {
         *p_param_values++ = DTS_EAGLE_MODULE_ENABLE;
         *p_param_values++ = 0; /* hpx off*/
@@ -901,13 +1018,11 @@ static int hpx_send_params(eff_mode_t mode, void *ctl,
         *p_param_values++ = 1; /* hpx on*/
     }
 
-    if (ctl) {
-        if (mode == OFFLOAD)
-            mixer_ctl_set_array(ctl, param_values, ARRAY_SIZE(param_values));
-        else {
-            if (ioctl(*(int *)ctl, AUDIO_EFFECTS_SET_PP_PARAMS, param_values) < 0)
-                ALOGE("%s: sending h/w acc hpx state params fail[%d]", __func__, errno);
-        }
+    if (mode == OFFLOAD)
+        mixer_ctl_set_array(ctl, param_values, ARRAY_SIZE(param_values));
+    else {
+        if (ioctl(*(int *)ctl, AUDIO_EFFECTS_SET_PP_PARAMS, param_values) < 0)
+            ALOGE("%s: sending h/w acc hpx state params fail[%d]", __func__, errno);
     }
     return 0;
 }

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2013-2014, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2013-2019, The Linux Foundation. All rights reserved.
  * Not a contribution.
  *
  * Copyright (C) 2013 The Android Open Source Project
@@ -230,6 +230,8 @@ void *platform_init(struct audio_device *adev)
     char value[PROPERTY_VALUE_MAX];
     struct platform_data *my_data;
     const char *snd_card_name;
+    const char *mixer_ctl_name = "Set HPX ActiveBe";
+    struct mixer_ctl *ctl = NULL;
 
     adev->mixer = mixer_open(MIXER_CARD);
 
@@ -341,7 +343,50 @@ void *platform_init(struct audio_device *adev)
         }
     }
 
+    /* Configure active back end for HPX*/
+    ctl = mixer_get_ctl_by_name(adev->mixer, mixer_ctl_name);
+    if (ctl) {
+        ALOGI(" sending HPX Active BE information ");
+        mixer_ctl_set_value(ctl, 0, false);
+    }
+
     return my_data;
+}
+
+struct audio_custom_mtmx_params *
+    platform_get_custom_mtmx_params
+    (
+        void *platform __unused,
+        struct audio_custom_mtmx_params_info *info __unused,
+        uint32_t *idx __unused
+    )
+{
+    ALOGW("%s: not implemented!", __func__);
+    return NULL;
+}
+
+int platform_add_custom_mtmx_params
+    (
+        void *platform __unused,
+        struct audio_custom_mtmx_params_info *info __unused
+    )
+{
+    ALOGW("%s: not implemented!", __func__);
+    return -ENOSYS;
+}
+
+struct audio_custom_mtmx_in_params *platform_get_custom_mtmx_in_params(void *platform,
+                                   struct audio_custom_mtmx_in_params_info *info)
+{
+    ALOGW("%s: not implemented!", __func__);
+    return -ENOSYS;
+}
+
+int platform_add_custom_mtmx_in_params(void *platform,
+                                    struct audio_custom_mtmx_in_params_info *info)
+{
+    ALOGW("%s: not implemented!", __func__);
+    return -ENOSYS;
 }
 
 void platform_deinit(void *platform)
@@ -374,7 +419,8 @@ int platform_get_snd_device_name_extn(void *platform, snd_device_t snd_device,
     return 0;
 }
 
-void platform_add_backend_name(char *mixer_path, snd_device_t snd_device)
+void platform_add_backend_name(char *mixer_path, snd_device_t snd_device,
+                               struct audio_usecase *usecase __unused)
 {
     if (snd_device == SND_DEVICE_IN_BT_SCO_MIC)
         strlcat(mixer_path, " bt-sco", MIXER_PATH_MAX_LENGTH);
@@ -392,7 +438,12 @@ void platform_add_backend_name(char *mixer_path, snd_device_t snd_device)
 
 int platform_get_pcm_device_id(audio_usecase_t usecase, int device_type)
 {
-    int device_id;
+    int device_id = -1;
+
+    if ((usecase >= AUDIO_USECASE_MAX) || (usecase <= USECASE_INVALID)) {
+        ALOGE("%s: invalid usecase case idx %d", __func__, usecase);
+        return device_id;
+    }
     if (device_type == PCM_PLAYBACK)
         device_id = pcm_device_table[usecase][0];
     else
@@ -421,6 +472,13 @@ int platform_get_snd_device_acdb_id(snd_device_t snd_device __unused)
 {
     ALOGE("%s: Not implemented", __func__);
     return -ENOSYS;
+}
+
+void platform_add_external_specific_device(snd_device_t snd_device __unused,
+                                           const char *name __unused,
+                                           unsigned int acdb_id __unused)
+{
+    return;
 }
 
 int platform_set_snd_device_bit_width(snd_device_t snd_device __unused,
@@ -478,18 +536,40 @@ int platform_get_default_app_type(void *platform __unused)
     return -ENOSYS;
 }
 
-int platform_send_audio_calibration(void *platform, snd_device_t snd_device,
-                                    int app_type __unused, int sample_rate __unused)
+int platform_send_audio_calibration(void *platform, struct audio_usecase *usecase,
+                                    int app_type __unused)
 {
     struct platform_data *my_data = (struct platform_data *)platform;
     int acdb_dev_id, acdb_dev_type;
+    struct audio_device *adev = my_data->adev;
+    int snd_device = SND_DEVICE_OUT_SPEAKER;
 
+    if (usecase->type == PCM_PLAYBACK)
+        snd_device = platform_get_output_snd_device(adev->platform,
+                                            usecase->stream.out->devices);
+    else if ((usecase->type == PCM_CAPTURE) &&
+                   voice_is_in_call_rec_stream(usecase->stream.in))
+        snd_device = voice_get_incall_rec_snd_device(usecase->in_snd_device);
+    else if ((usecase->type == PCM_HFP_CALL) || (usecase->type == PCM_CAPTURE))
+        snd_device = platform_get_input_snd_device(adev->platform, NULL,
+                                            adev->primary_output->devices);
     acdb_dev_id = acdb_device_table[snd_device];
     if (acdb_dev_id < 0) {
         ALOGE("%s: Could not find acdb id for device(%d)",
               __func__, snd_device);
         return -EINVAL;
     }
+
+    /* Notify device change info to effect clients registered */
+    if (usecase->type == PCM_PLAYBACK) {
+        audio_extn_gef_notify_device_config(
+                usecase->stream.out->devices,
+                usecase->stream.out->channel_mask,
+                usecase->stream.out->app_type_cfg.sample_rate,
+                acdb_dev_id,
+                usecase->stream.out->app_type_cfg.app_type);
+    }
+
     if (my_data->acdb_send_audio_cal) {
         ("%s: sending audio calibration for snd_device(%d) acdb_id(%d)",
               __func__, snd_device, acdb_dev_id);
@@ -646,6 +726,11 @@ int platform_set_device_mute(void *platform __unused, bool state __unused, char 
     return -ENOSYS;
 }
 
+int platform_get_ext_disp_type(void *platform)
+{
+    return EXT_DISPLAY_TYPE_HDMI;
+}
+
 snd_device_t platform_get_output_snd_device(void *platform, audio_devices_t devices)
 {
     struct platform_data *my_data = (struct platform_data *)platform;
@@ -660,7 +745,7 @@ snd_device_t platform_get_output_snd_device(void *platform, audio_devices_t devi
         goto exit;
     }
 
-    if (voice_is_in_call(adev)) {
+    if (mode == AUDIO_MODE_IN_CALL) {
         if (devices & AUDIO_DEVICE_OUT_WIRED_HEADPHONE ||
             devices & AUDIO_DEVICE_OUT_WIRED_HEADSET) {
             if (adev->voice.tty_mode == TTY_MODE_FULL)
@@ -735,24 +820,26 @@ exit:
     return snd_device;
 }
 
-snd_device_t platform_get_input_snd_device(void *platform, audio_devices_t out_device)
+snd_device_t platform_get_input_snd_device(void *platform,
+                                           struct stream_in *in,
+                                           audio_devices_t out_device)
 {
     struct platform_data *my_data = (struct platform_data *)platform;
     struct audio_device *adev = my_data->adev;
-    audio_source_t  source = (adev->active_input == NULL) ?
-                                AUDIO_SOURCE_DEFAULT : adev->active_input->source;
-
-    audio_mode_t    mode   = adev->mode;
-    audio_devices_t in_device = ((adev->active_input == NULL) ?
-                                    AUDIO_DEVICE_NONE : adev->active_input->device)
-                                & ~AUDIO_DEVICE_BIT_IN;
-    audio_channel_mask_t channel_mask = (adev->active_input == NULL) ?
-                                AUDIO_CHANNEL_IN_MONO : adev->active_input->channel_mask;
+    audio_mode_t mode = adev->mode;
     snd_device_t snd_device = SND_DEVICE_NONE;
+
+    if (in == NULL)
+        in = adev_get_active_input(adev);
+
+    audio_source_t source = (in == NULL) ? AUDIO_SOURCE_DEFAULT : in->source;
+    audio_devices_t in_device =
+        ((in == NULL) ? AUDIO_DEVICE_NONE : in->device) & ~AUDIO_DEVICE_BIT_IN;
+    audio_channel_mask_t channel_mask = (in == NULL) ? AUDIO_CHANNEL_IN_MONO : in->channel_mask;
 
     ALOGV("%s: enter: out_device(%#x) in_device(%#x)",
           __func__, out_device, in_device);
-    if ((out_device != AUDIO_DEVICE_NONE) && voice_is_in_call(adev)) {
+    if ((out_device != AUDIO_DEVICE_NONE) && (mode == AUDIO_MODE_IN_CALL)) {
         if (adev->voice.tty_mode != TTY_MODE_OFF) {
             if (out_device & AUDIO_DEVICE_OUT_WIRED_HEADPHONE ||
                 out_device & AUDIO_DEVICE_OUT_WIRED_HEADSET) {
@@ -823,8 +910,8 @@ snd_device_t platform_get_input_snd_device(void *platform, audio_devices_t out_d
     } else if (source == AUDIO_SOURCE_VOICE_COMMUNICATION) {
         if (out_device & AUDIO_DEVICE_OUT_SPEAKER)
             in_device = AUDIO_DEVICE_IN_BACK_MIC;
-        if (adev->active_input) {
-            if (adev->active_input->enable_aec) {
+        if (in) {
+            if (in->enable_aec) {
                 if (in_device & AUDIO_DEVICE_IN_BACK_MIC) {
                     snd_device = SND_DEVICE_IN_SPEAKER_MIC_AEC;
                 } else if (in_device & AUDIO_DEVICE_IN_BUILTIN_MIC) {
@@ -1013,6 +1100,12 @@ int platform_stop_incall_music_usecase(void *platform __unused)
     return -ENOSYS;
 }
 
+unsigned char* platform_get_license(void *platform, int *size)
+{
+    ALOGE("%s: Not implemented", __func__);
+    return NULL;
+}
+
 /* Delay in Us */
 int64_t platform_render_latency(audio_usecase_t usecase)
 {
@@ -1048,6 +1141,12 @@ bool platform_check_and_set_codec_backend_cfg(struct audio_device* adev __unused
     return false;
 }
 
+bool platform_check_and_set_capture_codec_backend_cfg(struct audio_device* adev __unused,
+                                              struct audio_usecase *usecase __unused)
+{
+    return false;
+}
+
 int platform_get_usecase_index(const char * usecase __unused)
 {
     return -ENOSYS;
@@ -1059,9 +1158,14 @@ int platform_set_usecase_pcm_id(audio_usecase_t usecase __unused, int32_t type _
     return -ENOSYS;
 }
 
-int platform_set_snd_device_backend(snd_device_t snd_device __unused,
-                                    const char * backend __unused,
-                                    const char * hw_interface __unused)
+int platform_set_snd_device_backend(snd_device_t device __unused,
+                                    const char *backend __unused,
+                                    const char *hw_interface __unused)
+{
+    return -ENOSYS;
+}
+
+int platform_get_snd_device_backend_index(snd_device_t device)
 {
     return -ENOSYS;
 }
@@ -1092,11 +1196,6 @@ uint32_t platform_get_pcm_offload_buffer_size(audio_offload_info_t* info __unuse
     return 0;
 }
 
-bool platform_use_small_buffer(audio_offload_info_t* info)
-{
-    return false;
-}
-
 int platform_get_edid_info(void *platform __unused)
 {
    return -ENOSYS;
@@ -1110,13 +1209,15 @@ int platform_set_channel_map(void *platform __unused, int ch_count __unused,
 
 int platform_set_stream_channel_map(void *platform __unused,
                                     audio_channel_mask_t channel_mask __unused,
-                                    int snd_id __unused)
+                                    int snd_id __unused
+                                    uint8_t *input_channel_map __unused)
 {
     return -ENOSYS;
 }
 
 int platform_set_edid_channels_configuration(void *platform __unused,
-                                             int channels __unused)
+                                             int channels __unused,
+                                             int backend_idx __unused)
 {
     return 0;
 }
@@ -1132,17 +1233,26 @@ bool platform_is_edid_supported_format(void *platform __unused,
     return  false;
 }
 
+bool platform_is_edid_supported_sample_rate(void *platform __unused,
+                                    int sample_rate __unused)
+{
+    return false;
+}
+
 void platform_cache_edid(void * platform __unused)
 {
 
 }
 
-void platform_invalidate_edid(void * platform __unused)
+void platform_invalidate_hdmi_config(void * platform __unused)
 {
 
 }
 
-int platform_set_hdmi_config(struct stream_out *out __unused)
+int platform_set_hdmi_config(void *platform __unused,
+                                    uint32_t channel_count __unused,
+                                    uint32_t sample_rate __unused,
+                                    bool enable_passthrough __unused)
 {
     return 0;
 }
@@ -1153,8 +1263,9 @@ int platform_set_device_params(struct stream_out *out __unused,
     return 0;
 }
 
-int platform_set_snd_device_name(snd_device_t snd_device __unused,
-                                 const char * name __unused)
+int platform_set_audio_device_interface(const char * device_name __unused,
+                                        const char *intf_name __unused,
+                                        const char *codec_type __unused)
 {
     return -ENOSYS;
 }
@@ -1165,15 +1276,169 @@ bool platform_send_gain_dep_cal(void *platform __unused,
     return 0;
 }
 
-bool platform_can_split_snd_device(snd_device_t in_snd_device __unused,
-                                   int *num_devices __unused,
-                                   snd_device_t *out_snd_devices __unused)
+void platform_set_gsm_mode(void *platform __unused, bool enable __unused)
 {
+    ALOGE("%s: Not implemented", __func__);
+}
+
+bool platform_can_enable_spkr_prot_on_device(snd_device_t snd_device __unused)
+{
+    /* speaker protection not implemented for this platform*/
     return false;
+}
+
+int platform_get_spkr_prot_acdb_id(snd_device_t snd_device __unused)
+{
+    return -ENOSYS;
+}
+
+int platform_get_spkr_prot_snd_device(snd_device_t snd_device __unused)
+{
+    return -ENOSYS;
+}
+
+int platform_get_vi_feedback_snd_device(snd_device_t snd_device __unused)
+{
+    return -ENOSYS;
+}
+
+int platform_spkr_prot_is_wsa_analog_mode(void *adev __unused)
+{
+    return 0;
+
+}
+
+int platform_can_split_snd_device(snd_device_t in_snd_device __unused,
+                                  int *num_devices __unused,
+                                  snd_device_t *out_snd_devices __unused)
+{
+    return -ENOSYS;
 }
 
 bool platform_check_backends_match(snd_device_t snd_device1 __unused,
                                    snd_device_t snd_device2 __unused)
 {
-    return true;
+    return -ENOSYS;
+}
+
+int platform_send_audio_cal(void* platform __unused,
+        acdb_audio_cal_cfg_t* cal __unused, void* data __unused,
+        int length __unused, bool persist __unused)
+{
+    return -ENOSYS;
+}
+
+int platform_get_audio_cal(void* platform __unused,
+        acdb_audio_cal_cfg_t* cal __unused, void* data __unused,
+        int* length __unused, bool persist __unused)
+{
+    return -ENOSYS;
+}
+
+int platform_store_audio_cal(void* platform __unused,
+        acdb_audio_cal_cfg_t* cal __unused, void* data __unused,
+        int length __unused)
+{
+     return -ENOSYS;
+}
+
+
+int platform_retrieve_audio_cal(void* platform __unused,
+        acdb_audio_cal_cfg_t* cal __unused, void* data __unused,
+        int* length __unused)
+{
+    return -ENOSYS;
+}
+
+int platform_set_sidetone(struct audio_device *adev,
+                          snd_device_t out_snd_device,
+                          bool enable,
+                          char *str)
+{
+    int ret;
+    if (out_snd_device == SND_DEVICE_OUT_USB_HEADSET) {
+            ret = audio_extn_usb_enable_sidetone(out_snd_device, enable);
+            if (ret)
+                ALOGI("%s: usb device %d does not support device sidetone\n",
+                  __func__, out_snd_device);
+    } else {
+        ALOGV("%s: sidetone out device(%d) mixer cmd = %s\n",
+              __func__, out_snd_device, str);
+
+        if (enable)
+            audio_route_apply_and_update_path(adev->audio_route, str);
+        else
+            audio_route_reset_and_update_path(adev->audio_route, str);
+    }
+    return 0;
+}
+
+void platform_update_aanc_path(struct audio_device *adev __unused,
+                               snd_device_t out_snd_device __unused,
+                               bool enable __unused,
+                               char *str __unused)
+{
+    return;
+}
+
+bool platform_check_codec_dsd_support(void *platform __unused)
+{
+    return false;
+}
+
+int platform_get_backend_index(snd_device_t snd_device __unused);
+{
+    return 0;
+}
+
+bool platform_check_codec_asrc_support(void *platform __unused)
+{
+    return false;
+}
+
+bool platform_add_gain_level_mapping(struct amp_db_and_gain_table *tbl_entry __unused)
+{
+    return false;
+}
+
+int platform_get_gain_level_mapping(struct amp_db_and_gain_table *mapping_tbl __unused,
+                                    int table_size __unused)
+{
+    return 0;
+}
+
+int platform_get_meta_info_key_from_list(void *platform __unused,
+                                         char *mod_name __unused)
+{
+    return 0;
+}
+
+int platform_set_acdb_metainfo_key(void *platform __unused, char *name __unused,
+                                   int key __unused)
+{
+    return 0;
+}
+
+int platform_get_mmap_data_fd(void *platform, int fe_dev, int dir, int *fd,
+                              uint32_t *size)
+{
+    return -ENOSYS;
+}
+
+bool platform_set_microphone_characteristic(void *platform __unused,
+                                            struct audio_microphone_characteristic_t mic __unused) {
+    return -ENOSYS;
+}
+
+int platform_get_microphones(void *platform __unused,
+                             struct audio_microphone_characteristic_t *mic_array __unused,
+                             size_t *mic_count __unused) {
+    return -ENOSYS;
+}
+
+int platform_get_active_microphones(void *platform __unused, unsigned int channels __unused,
+                                    audio_usecase_t usecase __unused,
+                                    struct audio_microphone_characteristic_t *mic_array __unused,
+                                    size_t *mic_count __unused) {
+    return -ENOSYS;
 }
